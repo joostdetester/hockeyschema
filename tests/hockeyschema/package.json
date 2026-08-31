@@ -1,0 +1,45 @@
+{
+  "name": "hockeyschema",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "bddgen": "npx bddgen",
+    "bdd": "npm run bddgen && npx playwright test --reporter=list,allure-playwright",
+    "bdd:headed": "npm run bddgen && npx playwright test --headed",
+    "test:e2e": "npm run bddgen && npx playwright test --grep-invert @accessibility --reporter=list,allure-playwright",
+    "test:a11y": "npm run bddgen && npx playwright test --grep @accessibility --reporter=list,allure-playwright",
+    "a11y:report": "node scripts/build-a11y-report.mjs",
+    "allure:generate": "allure generate allure-results --clean -o allure-report || true",
+    "allure:open": "allure open allure-report || true",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "clean": "rimraf test-results allure-results allure-report playwright-report .features-gen a11y-report-data a11y-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "1.58.2",
+    "@types/node": "^22.0.0",
+    "allure-commandline": "^2.13.10",
+    "allure-playwright": "^2.0.0",
+    "dotenv": "^16.0.0",
+    "eslint": "^9.15.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-playwright": "^2.0.1",
+    "playwright-bdd": "8.4.2",
+    "prettier": "^3.3.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.15.0"
+  },
+  "dependencies": {
+    "@cucumber/cucumber": "^12.6.0"
+  },
+  "overrides": {
+    "playwright-core": "1.58.2"
+  }
+}

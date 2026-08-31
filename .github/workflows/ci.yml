@@ -1,0 +1,353 @@
+name: CI
+
+# main -> the "test" environment (latest changes); acceptance -> the
+# "acceptance" environment (promoted from main once it's proven on test).
+# See ai/repo-structure.md for the branch/environment model.
+on:
+  push:
+    branches: [main, acceptance]
+  pull_request:
+    branches: [main, acceptance]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      # npm install, not npm ci: this project may not have a committed
+      # package-lock.json (the install step at scaffold time is optional),
+      # and npm ci hard-requires one.
+      - run: npm install
+
+      - run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm install
+
+      - run: npm run typecheck
+
+  # Playwright and Accessibility only start once lint+typecheck are green —
+  # no point spending browser-install + test time on code that fails the
+  # cheap static checks first. `needs:` already skips this job on failure,
+  # no extra `if:` needed.
+  #
+  # These two jobs run in parallel by default. If this SUT has a shared,
+  # stateful test account (e.g. a demo site where every run logs into and
+  # mutates the same cart/order data), running Accessibility scenarios that
+  # navigate through that same flow concurrently with Playwright's own
+  # scenarios can race and corrupt each other's state - happened on
+  # shopping-cart-demo once its accessibility scans started covering
+  # login/cart/checkout, not just the stateless homepage. Fix there was
+  # making accessibility `needs: [lint, typecheck, playwright]` with
+  # `if: always() && needs.lint.result == 'success' && needs.typecheck.result == 'success'`
+  # so the two jobs never overlap - apply the same pattern here if this
+  # project's a11y scans start touching stateful pages.
+  accessibility:
+    name: Accessibility
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    # PRs target a branch without being on it yet, so base_ref is what
+    # picks the environment there; push events use ref_name directly.
+    # (GitHub Actions expressions have no ternary, so this is the &&/||
+    # idiom: pick base_ref or ref_name depending on event type, then map
+    # 'acceptance' -> 'acceptance', anything else -> 'test'.)
+    environment: "${{ (github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'acceptance' && 'acceptance' || 'test' }}"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps
+
+      # BASE_URL / API_BASE_URL fall back to the demo defaults in
+      # config/project.config.ts when unset. Set the real values per
+      # environment (Settings > Environments > test / acceptance >
+      # Environment secrets) — this job's `environment:` above picks which
+      # set applies. Runs only the @accessibility-tagged scenarios — see
+      # ai/accessibility-testing.md.
+      - run: npm run test:a11y
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+
+      # Raw Allure result files (not the generated HTML report yet) — the
+      # test-summary job below merges this with the Playwright job's results
+      # into one combined Allure report. `if: always()` so a failing run
+      # still uploads whatever results it produced.
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: allure-results-accessibility
+          path: allure-results/
+          if-no-files-found: warn
+
+      # Standalone HTML accessibility report (independent of Allure) built
+      # from the per-scan records pageobjects/_shared/accessibility.ts wrote
+      # to a11y-report-data/ - see ai/accessibility-testing.md. `if: always()`
+      # so a failing scan still gets a report showing what it found.
+      - name: Build accessibility HTML report
+        if: always()
+        run: npm run a11y:report
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+
+      - name: Upload accessibility HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: a11y-report
+          path: a11y-report/
+          if-no-files-found: warn
+
+  playwright:
+    name: Playwright
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    environment: "${{ (github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'acceptance' && 'acceptance' || 'test' }}"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps
+
+      # Runs everything except @accessibility (that's the dedicated
+      # Accessibility job above) — see ai/testing-guidelines.md.
+      - run: npm run test:e2e
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: allure-results-playwright
+          path: allure-results/
+          if-no-files-found: warn
+
+  # Combines both jobs' raw Allure results into one report and publishes it
+  # to GitHub Pages — a single meta overview (pass/fail per suite/tag) with
+  # drill-down into every individual test, native to Allure. Runs even if
+  # accessibility/playwright failed (`if: always()`), so a failing run still
+  # gets a report showing what happened.
+  #
+  # NOTE: the published report is publicly reachable at the repo's Pages
+  # URL, even though this repo is private — GitHub Pages has no "private"
+  # option outside GitHub Enterprise Cloud. Only acceptable because this is
+  # a demo project with no sensitive data in its test output.
+  # main and acceptance each publish their own Allure report under their own
+  # subpath (/main/, /acceptance/) on the one shared Pages site, so a run on
+  # one branch never wipes out the other branch's latest report.
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [accessibility, playwright]
+    if: always()
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      actions: read
+    # Separate environment per branch (github-pages-main / github-pages-
+    # acceptance) so each branch keeps its own deployment history and a
+    # permanently visible URL badge in the Actions UI - GitHub Environments
+    # only shows the badge for the most recently active deployment, so
+    # sharing one environment between branches meant whichever branch
+    # deployed last silently marked the other's badge inactive (the site
+    # itself stayed correct either way, only the UI badge was affected).
+    environment:
+      name: github-pages-${{ github.ref_name }}
+      url: ${{ steps.deployment.outputs.page_url }}${{ steps.branch.outputs.dir }}/
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm install
+
+      - name: Download Playwright Allure results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: allure-results-playwright
+          path: allure-results
+
+      - name: Download Accessibility Allure results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: allure-results-accessibility
+          path: allure-results
+
+      - name: Download accessibility HTML report
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: a11y-report
+          path: a11y-report-download
+
+      # This branch's own report lives under site/<branch>/ - main and
+      # acceptance are the only two branches this workflow runs on.
+      - name: Determine branch output path
+        id: branch
+        run: |
+          echo "dir=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "other=acceptance" >> "$GITHUB_OUTPUT"
+          else
+            echo "other=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fills Allure's "Trend" widget, which otherwise stays empty forever —
+      # each run starts from a clean allure-results/ with no run history of
+      # its own. The previously deployed report's history/ is the only
+      # place that history survives between runs, so pull it back from this
+      # branch's own subpath on the live Pages site before generating
+      # (best-effort: continue on 404 for the very first deploy of this
+      # branch, when there's nothing to fetch yet).
+      - name: Fetch previous report history (for Allure trend)
+        continue-on-error: true
+        run: |
+          mkdir -p allure-results/history
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          PAGES_URL="https://${{ github.repository_owner }}.github.io/${REPO_NAME}/${{ steps.branch.outputs.dir }}/"
+          for f in history.json history-trend.json categories-trend.json duration-trend.json retry-trend.json; do
+            curl -fsSL "${PAGES_URL}history/$f" -o "allure-results/history/$f" 2>/dev/null || true
+          done
+
+      # Fills the "Environment" widget. Deliberately excludes BASE_URL /
+      # API_BASE_URL / USER_EMAIL / USER_PASSWORD — this report is publicly
+      # reachable (see the note on this job above), so nothing from the
+      # environment secrets belongs here, even values that happen to be
+      # harmless for today's demo SUT.
+      - name: Write Allure environment info
+        run: |
+          {
+            echo "Environment=${{ (github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'acceptance' && 'acceptance' || 'test' }}"
+            echo "Branch=${{ github.ref_name }}"
+            echo "Node.js=$(node --version)"
+          } > allure-results/environment.properties
+
+      # Fills the "Executors" widget with a link back to the CI run.
+      - name: Write Allure executor info
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          PAGES_URL="https://${{ github.repository_owner }}.github.io/${REPO_NAME}/"
+          cat > allure-results/executor.json << EOF
+          {
+            "name": "GitHub Actions",
+            "type": "github",
+            "buildOrder": ${{ github.run_number }},
+            "buildName": "CI #${{ github.run_number }}",
+            "buildUrl": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "reportUrl": "${PAGES_URL}${{ steps.branch.outputs.dir }}/",
+            "reportName": "Allure Report"
+          }
+          EOF
+
+      - run: npx allure generate allure-results --clean -o site/${{ steps.branch.outputs.dir }}
+
+      # Publishes the standalone accessibility HTML report (see
+      # ai/accessibility-testing.md) alongside the Allure report, under this
+      # branch's own subpath - must run after `allure generate` above, since
+      # its --clean would otherwise wipe this out.
+      - name: Include accessibility HTML report in the site
+        continue-on-error: true
+        run: |
+          if [ -d a11y-report-download ] && [ -n "$(ls -A a11y-report-download 2>/dev/null)" ]; then
+            mkdir -p "site/${{ steps.branch.outputs.dir }}/a11y-report"
+            cp -r a11y-report-download/. "site/${{ steps.branch.outputs.dir }}/a11y-report/"
+          fi
+
+      # Recover the other branch's last-deployed report so this deploy
+      # doesn't wipe it out - actions/deploy-pages publishes the *entire*
+      # uploaded artifact as the site each time, so anything not carried
+      # forward here would be lost. Pulls the exact static files from the
+      # other branch's last successful "Test Summary" run via the Actions
+      # artifact it already uploaded to Pages, rather than trying to
+      # reconstruct them (Allure's output includes many generated filenames
+      # that aren't otherwise enumerable from outside the job).
+      - name: Recover other branch's report (avoid overwriting it)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OTHER="${{ steps.branch.outputs.other }}"
+          for RUN_ID in $(gh run list -R "$GITHUB_REPOSITORY" --branch "$OTHER" --workflow ci.yml --limit 5 --json databaseId --jq '.[].databaseId'); do
+            CONCLUSION=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --json jobs --jq '.jobs[] | select(.name=="Test Summary") | .conclusion')
+            if [ "$CONCLUSION" = "success" ]; then
+              mkdir -p /tmp/other-artifact /tmp/other-extracted
+              gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n github-pages -D /tmp/other-artifact
+              # That previous deploy's artifact is the whole site (its own
+              # subpath plus whatever else was live then), not just its own
+              # report - pull out only its "$OTHER/" subdirectory, or a
+              # naive extract-in-place would nest it one level too deep
+              # (site/$OTHER/$OTHER/... instead of site/$OTHER/...).
+              tar -xf /tmp/other-artifact/artifact.tar -C /tmp/other-extracted
+              if [ -d "/tmp/other-extracted/$OTHER" ]; then
+                rm -rf "site/$OTHER"
+                cp -r "/tmp/other-extracted/$OTHER" "site/$OTHER"
+              fi
+              break
+            fi
+          done
+
+      - name: Write Pages landing page
+        run: |
+          write_branch_link() {
+            local branch="$1"
+            [ -d "site/$branch" ] || return 0
+            echo "<li><a href=\"$branch/\">$branch</a>"
+            [ -d "site/$branch/a11y-report" ] && echo " (<a href=\"$branch/a11y-report/\">accessibility report</a>)"
+            echo "</li>"
+          }
+          {
+            echo "<!doctype html><meta charset=\"utf-8\"><title>Test Reports</title>"
+            echo "<h1>Test Reports</h1><ul>"
+            write_branch_link main
+            write_branch_link acceptance
+            echo "</ul>"
+          } > site/index.html
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Link report in step summary
+        run: |
+          echo "## Test Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Allure report: ${{ steps.deployment.outputs.page_url }}${{ steps.branch.outputs.dir }}/" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "site/${{ steps.branch.outputs.dir }}/a11y-report" ]; then
+            echo "- Accessibility HTML report: ${{ steps.deployment.outputs.page_url }}${{ steps.branch.outputs.dir }}/a11y-report/" >> "$GITHUB_STEP_SUMMARY"
+          fi

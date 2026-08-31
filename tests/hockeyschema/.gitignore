@@ -1,0 +1,10 @@
+node_modules/
+test-results/
+playwright-report/
+playwright/.cache/
+.features-gen/
+allure-results/
+allure-report/
+a11y-report-data/
+a11y-report/
+.env

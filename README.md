@@ -1,71 +1,19 @@
-# Wedstrijdschema — React build
+# hockeyschema
 
-Standalone Vite + React versie van de hockey-wedstrijdschema-app.
+Monorepo met de Wedstrijdschema-app en de bijbehorende Playwright-testen.
 
-## Starten
+- `apps/hockeyschema/` — de React/Vite-app (Firebase Auth + Firestore,
+  multi-team). Zie `apps/hockeyschema/README.md`.
+- `tests/hockeyschema/` — Playwright + Cucumber (BDD) testautomatisering voor
+  de app hierboven. Zie `tests/hockeyschema/README.md` en `tests/hockeyschema/ai/`
+  voor de testrichtlijnen.
 
-```
-npm install
-npm run dev
-```
+Elke map heeft zijn eigen `package.json` en wordt onafhankelijk geïnstalleerd
+(`npm install` binnen de betreffende map).
 
-Open de URL die Vite toont (meestal http://localhost:5173).
+## CI
 
-## Build
-
-```
-npm run build              # productie (hockeyschema-prod)
-npm run build:acceptatie   # acceptatie (hockeyschema-acc)
-npm run build:test         # test (hockeyschema-test)
-npm run preview
-```
-
-## Opslag & omgevingen
-
-Data (team, strafcorner, programma, historie, huidige wedstrijd) staat per team
-in Firestore, verdeeld over 3 Firebase-projecten (`hockeyschema-test`,
-`hockeyschema-acc`, `hockeyschema-prod`) — welke omgeving actief is, bepalen de
-`.env.*`-bestanden. Alleen ingelogde gebruikers kunnen wijzigen; Team, Afspraken
-en Historie zijn ook bij lezen alleen zichtbaar voor ingelogde teamleden/admins.
-
-### Nieuwe gebruiker toevoegen
-
-1. Account aanmaken in Firebase Console → Authentication → Users (e-mail +
-   wachtwoord), voor de juiste omgeving.
-2. De UID van dat account kopiëren.
-3. In Firestore (zelfde project) een document aanmaken: `users/{uid}` met
-   `{ teamId: "...", role: "member" of "admin", email: "..." }` — het
-   `teamId` staat in de Teams-tab van de app.
-
-### Firestore-rules aanpassen
-
-`firestore.rules` bewerken, dan per omgeving deployen:
-```
-firebase deploy --only firestore:rules --project test
-firebase deploy --only firestore:rules --project acceptatie
-firebase deploy --only firestore:rules --project productie
-```
-
-### Wedstrijden importeren vanaf de clubwebsite
-
-Onder Programma kan een teamlid/admin het team koppelen aan de wedstrijdpagina
-van de eigen clubwebsite (LISA-platform, bv. hcrb.nl/team-detail/...), en
-daarna met één knop de wedstrijden importeren. De koppeling (club-id, team-id,
-autorisatie-header) haal je op via de browser-DevTools op die pagina (Network-
-tab, filter op "lisahockey", request-headers van `matches_upcoming_round`) en
-staat per team in Firestore (`teams/{teamId}/config/lisa`, alleen zichtbaar
-voor teamleden/admins). Dit is een onofficiële, ongedocumenteerde koppeling —
-kan zonder waarschuwing stoppen met werken als de clubwebsite verandert; val in
-dat geval terug op "Programma plakken". Moet per Firebase-omgeving (test/
-acceptatie/productie) apart ingesteld worden, en voor elk ander team met een
-eigen LISA-website opnieuw uitgevoerd worden.
-
-## Structuur
-
-- `src/App.jsx` — de volledige applicatie (state, indelingslogica, UI).
-- `src/ds/styles.css` — het Broadsheet-designsysteem (kleuren, type, componenten).
-- `src/index.css` — kleine resets + printregels.
-- `src/firebase.js` — Firebase-initialisatie (auth + Firestore).
-- `src/AuthContext.jsx` — login/logout, huidige gebruiker + team/rol.
-- `src/TeamContext.jsx` — teamlijst + team-switcher-state.
-- `src/Login.jsx` — inlogscherm.
+`.github/workflows/ci.yml` draaide oorspronkelijk vanuit de root van een
+losstaande testrepo en verwacht `npm`-commando's/paden op dat niveau — nu de
+testen in `tests/hockeyschema/` staan, moet deze workflow nog worden
+aangepast (working-directory / artifact-paden) voordat hij weer werkt.
