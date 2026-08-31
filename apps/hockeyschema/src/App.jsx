@@ -310,6 +310,11 @@ export default function App() {
   const [lisaEditing, setLisaEditing] = useState(false);
   const [lisaTeamOptions, setLisaTeamOptions] = useState(null);
   const [lisaTeamsBusy, setLisaTeamsBusy] = useState(false);
+  const [standings, setStandings] = useState([]);
+  const [standingsUpdatedAt, setStandingsUpdatedAt] = useState(null);
+  const [standingsBusy, setStandingsBusy] = useState(false);
+  const [standingsError, setStandingsError] = useState('');
+  const [selectedPouleId, setSelectedPouleId] = useState(null);
   const migratedRef = useRef(false);
 
   // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin).
@@ -330,11 +335,13 @@ export default function App() {
     publicSyncRef.current = '';
     const unsub = onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'public'), snap => {
       const d = snap.data() || {};
-      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match });
+      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null });
       setPlayers(d.players || []);
       setSc(d.sc || { verdedigen: [], aanval: [] });
       setFixtures(d.fixtures || []);
       setMatch(d.match || BLANK_MATCH);
+      setStandings(d.standings || []);
+      setStandingsUpdatedAt(d.standingsUpdatedAt || null);
       setLoadedTeamId(currentTeamId);
     }, () => setLoadedTeamId(currentTeamId));
     return unsub;
@@ -342,12 +349,12 @@ export default function App() {
 
   useEffect(() => {
     if (loadedTeamId !== currentTeamId || readOnly || !currentTeamId) return;
-    const blob = { players, sc, fixtures, match };
+    const blob = { players, sc, fixtures, match, standings, standingsUpdatedAt };
     const json = JSON.stringify(blob);
     if (json === publicSyncRef.current) return;
     publicSyncRef.current = json;
     setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), blob).catch(() => {});
-  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match]);
+  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt]);
 
   // Historie — alleen op te halen als je bij dit team hoort (of admin bent); anders leeg,
   // en er wordt geen leespoging gedaan (voorkomt permission-denied ruis). Zelfde
@@ -455,6 +462,29 @@ export default function App() {
       setLisaError('Importeren mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
     } finally {
       setLisaBusy(false);
+    }
+  }
+
+  // Standen komen van dezelfde LISA-koppeling als de wedstrijd-import, maar worden
+  // gecached in het publieke teamdocument (hierboven) zodat ook uitgelogde bezoekers
+  // ze kunnen zien zonder de auth-sleutel van de clubsite bloot te geven.
+  async function refreshStandings() {
+    if (readOnly || !lisaConfig) return;
+    setStandingsBusy(true);
+    setStandingsError('');
+    try {
+      const url = `https://api.lisahockey.nl/v1/duda/${lisaConfig.clubDudaId}/teams/${lisaConfig.teamId}/poules`;
+      const res = await fetch(url, { headers: { authorization: lisaConfig.authHeader, accept: '*/*' } });
+      if (!res.ok) throw new Error('http ' + res.status);
+      const data = await res.json();
+      const rows = data.teams || [];
+      if (!rows.length) { setStandingsError('Geen stand gevonden.'); return; }
+      setStandings(rows);
+      setStandingsUpdatedAt(new Date().toISOString());
+    } catch (e) {
+      setStandingsError('Stand ophalen mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
+    } finally {
+      setStandingsBusy(false);
     }
   }
 
@@ -619,7 +649,7 @@ export default function App() {
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
   const tabs = [
-    ['programma', 'Programma'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
+    ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams']
   ].map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
@@ -1014,6 +1044,21 @@ export default function App() {
   const keeperRotationText = history.length
     ? 'Aan de beurt om te keepen: ' + rotationOrder.slice(0, 4).map(p => p.first).join(', ') + '.'
     : 'Zodra je wedstrijden opslaat, zie je hier wie het langst niet gekeept heeft.';
+
+  // Eén poule (competitie) per gevonden poule_id, gesorteerd op id (loopt in de praktijk
+  // op naarmate een nieuwe competitiefase - bijv. de hoofdcompetitie na de voorcompetitie -
+  // bekend wordt). `is_current` markeert op welke poule-rij van dit team LISA op dit moment
+  // aanspeelt; die poule is de standaardselectie totdat iemand zelf een andere kiest.
+  const poules = Array.from(new Map(standings.map(r => [r.poule_id, r.poule_name])).entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.id - b.id);
+  const currentPouleRow = standings.find(r => r.is_current);
+  const currentPouleId = currentPouleRow ? currentPouleRow.poule_id : (poules.length ? poules[poules.length - 1].id : null);
+  const effectivePouleId = selectedPouleId != null ? selectedPouleId : currentPouleId;
+  const pouleRows = standings
+    .filter(r => r.poule_id === effectivePouleId)
+    .slice()
+    .sort((a, b) => a.position - b.position);
 
   const fixturesSorted = fixtures.slice().sort((a, b) => (a.date || '9') < (b.date || '9') ? -1 : 1);
   const fixtureRows = fixturesSorted.map(f => {
@@ -1564,6 +1609,77 @@ export default function App() {
                 </div>
               </div>
             </div>
+          )}
+        </main>
+      )}
+
+      {tab === 'standen' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
+          <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Standen</h2>
+
+          {isMyTeam && (
+            <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+              {lisaConfig ? (
+                <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
+                  <button type="button" className="btn btn-secondary" disabled={standingsBusy} onClick={refreshStandings}>{standingsBusy ? 'Bezig…' : 'Ververs stand'}</button>
+                  {standingsUpdatedAt && (
+                    <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                      Bijgewerkt op {new Date(standingsUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
+                  Koppel eerst de clubwebsite (bij Teams) om de stand te kunnen ophalen.
+                </p>
+              )}
+              {standingsError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{standingsError}</div>}
+            </div>
+          )}
+
+          {!standings.length ? (
+            <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
+              Nog geen stand beschikbaar{isMyTeam ? '' : ' — vraag een teamlid om deze te verversen'}.
+            </p>
+          ) : (
+            <>
+              <div className="field" style={css('max-width:360px')}>
+                <label htmlFor="standen-poule">Competitie</label>
+                <select className="input" id="standen-poule" value={effectivePouleId ?? ''} onChange={e => setSelectedPouleId(Number(e.target.value))}>
+                  {poules.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table" style={css('min-width:640px')}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'center' }}>#</th>
+                      <th style={{ textAlign: 'left' }}>Team</th>
+                      <th style={{ textAlign: 'center' }}>Gespeeld</th>
+                      <th style={{ textAlign: 'center' }}>W</th>
+                      <th style={{ textAlign: 'center' }}>G</th>
+                      <th style={{ textAlign: 'center' }}>V</th>
+                      <th style={{ textAlign: 'center' }}>Doelsaldo</th>
+                      <th style={{ textAlign: 'center' }}>Punten</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pouleRows.map(r => (
+                      <tr key={r.name} style={r.name === lisaConfig?.teamName ? { fontWeight: 600 } : undefined}>
+                        <td style={{ textAlign: 'center' }}>{r.position}</td>
+                        <td style={{ textAlign: 'left' }}>{r.name}</td>
+                        <td style={{ textAlign: 'center' }}>{r.number_of_matches}</td>
+                        <td style={{ textAlign: 'center' }}>{r.wins}</td>
+                        <td style={{ textAlign: 'center' }}>{r.draws}</td>
+                        <td style={{ textAlign: 'center' }}>{r.loses}</td>
+                        <td style={{ textAlign: 'center' }}>{r.goals_for}–{r.goals_against} ({r.goal_balance > 0 ? '+' : ''}{r.goal_balance})</td>
+                        <td style={{ textAlign: 'center' }}>{r.points}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </main>
       )}
