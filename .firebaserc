@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "test": "hockeyschema-test",
+    "acceptatie": "hockeyschema-acc",
+    "productie": "hockeyschema-prod",
+    "default": "hockeyschema-prod"
+  }
+}

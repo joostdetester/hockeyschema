@@ -1,0 +1,14 @@
+html, body { margin: 0; padding: 0; background: var(--color-bg); }
+a { color: var(--color-accent-700); text-decoration: none; }
+a:hover { color: var(--color-accent-2-700); }
+input[type="number"] { -moz-appearance: textfield; }
+@media print {
+  [data-noprint] { display: none !important; }
+  body { background: #fff; }
+  [data-sheet] { padding: 0 !important; }
+  [data-halfcard] { break-inside: avoid; }
+  [data-halfcard] h3 { font-size: 26px !important; }
+  [data-halfcard] div[style*="font-size: 16px"] { font-size: 20px !important; }
+  [data-halfcard] div[style*="font-size: 10px"] { font-size: 13px !important; }
+  [data-halfcard] div[style*="font-size: 15px"] { font-size: 18px !important; }
+}

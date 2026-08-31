@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isAdmin() { return request.auth != null && me().role == 'admin'; }
+    function isTeamMember(teamId) { return request.auth != null && (me().teamId == teamId || isAdmin()); }
+
+    match /teams/{teamId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /teams/{teamId}/state/public {
+      allow read: if true;
+      allow write: if isTeamMember(teamId);
+    }
+    match /teams/{teamId}/state/history {
+      allow read: if isTeamMember(teamId);
+      allow write: if isTeamMember(teamId);
+    }
+    match /teams/{teamId}/config/lisa {
+      allow read: if isTeamMember(teamId);
+      allow write: if isTeamMember(teamId);
+    }
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+  }
+}
