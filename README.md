@@ -13,7 +13,13 @@ Elke map heeft zijn eigen `package.json` en wordt onafhankelijk geïnstalleerd
 
 ## CI
 
-`.github/workflows/ci.yml` draaide oorspronkelijk vanuit de root van een
-losstaande testrepo en verwacht `npm`-commando's/paden op dat niveau — nu de
-testen in `tests/hockeyschema/` staan, moet deze workflow nog worden
-aangepast (working-directory / artifact-paden) voordat hij weer werkt.
+`.github/workflows/ci.yml` draait op push/PR naar `test`, `acceptance` en
+`main`, elk gekoppeld aan hun eigen omgeving (test/acceptance/production) en
+Firebase-project (zie `apps/hockeyschema/.firebaserc`). Op elke push (dus na
+een gemergde PR, of een directe push naar `test`) bouwt en deployt de
+`deploy`-job de app automatisch naar de bijbehorende Firebase Hosting-
+omgeving, waarna de Playwright/Accessibility-jobs tegen die net gedeployde
+site draaien. `acceptance` en `main` vereisen een pull request (branch
+protection); alleen `test` mag direct gepusht worden. Zie
+`tests/hockeyschema/ai/repo-structure.md` voor het volledige branch-/
+omgevingsmodel.

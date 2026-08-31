@@ -41,23 +41,29 @@ folders for test types a given project doesn't have.
 
 ## Branches & environments
 
-Two long-lived branches, each tied to its own GitHub Environment (Settings >
-Environments), so `BASE_URL`/`API_BASE_URL`/`USER_EMAIL`/`USER_PASSWORD` can
-differ per environment without touching the workflow:
+Three long-lived branches, each tied to its own GitHub Environment (Settings
+> Environments), so `BASE_URL`/`API_BASE_URL`/`USER_EMAIL`/`USER_PASSWORD`
+can differ per environment without touching the workflow:
 
-- `main` → **test** environment. Gets the latest changes first.
-- `acceptance` → **acceptance** environment. Promoted from `main` once
-  something has proven out on test — merge `main` into `acceptance` to
-  promote (never the other way around).
+- `test` → **test** environment. Freely pushable — no PR required. Gets the
+  latest changes first.
+- `acceptance` → **acceptance** environment. Promoted from `test` via PR once
+  something has proven out on test.
+- `main` → **production** environment. Promoted from `acceptance` via PR
+  once something has proven out on acceptance.
 
-Promote with a real merge commit, not a fast-forward:
-`git checkout acceptance && git merge --no-ff main`. GitHub Pages tracks
-its deployments by commit SHA — a fast-forward leaves `acceptance` on the
-exact same SHA `main` already deployed, and Pages silently skips rebuilding
-the site for a SHA it's already seen, so the Test Summary job's Allure
-report update goes missing even though the job itself reports success.
-`--no-ff` guarantees `acceptance` always gets its own SHA.
+`acceptance` and `main` both require a pull request — direct pushes are
+blocked by branch protection (Settings > Branches). `test` has no such
+restriction. Promotion always flows one direction: test → acceptance → main,
+never backwards.
 
-`.github/workflows/ci.yml` picks the right environment automatically from
-the branch being pushed to (or, for a PR, the branch it targets) — no
-separate workflow file per environment.
+`.github/workflows/ci.yml` picks the right environment (and, for deploys,
+the right Firebase project alias — see `apps/hockeyschema/.firebaserc`)
+automatically from the branch being pushed to (or, for a PR, the branch it
+targets) — no separate workflow file per environment. On every push (i.e.
+after a PR merges, or a direct push to `test`) the `deploy` job builds
+`apps/hockeyschema` for that environment and deploys it to that
+environment's Firebase Hosting project, using the `FIREBASE_TOKEN` repo
+secret (from `firebase login:ci`); a `pull_request` run skips the deploy
+step and tests against whatever is currently live in the target environment
+as a pre-merge sanity check.
