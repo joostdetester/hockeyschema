@@ -626,7 +626,7 @@ export default function App() {
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
       + (tab === t[0]
         ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600'
-        : 'color:var(--color-neutral-600);border-bottom:3px solid transparent;font-weight:400')
+        : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400')
   }));
   const activeTabLabel = (tabs.find(t => t.key === tab) || {}).label || 'Wedstrijdschema';
 
@@ -1038,7 +1038,7 @@ export default function App() {
       friendly: !!f.friendly,
       toggleFriendly: () => upd({ friendly: !f.friendly }),
       friendlyStyle: 'cursor:pointer;font-family:var(--font-body);font-size:13px;padding:2px 8px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-400);'
-        + (f.friendly ? 'background:var(--color-accent-2-100);color:var(--color-accent-2-800);border-color:var(--color-accent-2-400)' : 'background:transparent;color:var(--color-neutral-600)'),
+        + (f.friendly ? 'background:var(--color-accent-2-100);color:var(--color-accent-2-800);border-color:var(--color-accent-2-400)' : 'background:transparent;color:var(--color-neutral-700)'),
       points: (() => {
         if (f.friendly || f.gf === '' || f.gf == null || f.ga === '' || f.ga == null) return '—';
         const us = f.home ? Number(f.gf) : Number(f.ga);
@@ -1100,7 +1100,7 @@ export default function App() {
             </div>
             <div data-noprint="1" style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
               <div className="field" style={css('margin:0;min-width:200px')}>
-                <select className="input" style={css('padding:5px 8px;font-size:14px')} value={currentTeamId || ''}
+                <select className="input" aria-label="Team" style={css('padding:5px 8px;font-size:14px')} value={currentTeamId || ''}
                   onChange={e => setCurrentTeamId(e.target.value)}>
                   {!teams.length && <option value="">Nog geen teams</option>}
                   {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -1275,11 +1275,11 @@ export default function App() {
               <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
                 <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Blessure — schema opnieuw indelen</div>
                 <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
-                  <select className="input" style={css('max-width:220px')} value={injPlayer} onChange={e => setInjPlayer(e.target.value)}>
+                  <select className="input" aria-label="Speelster" style={css('max-width:220px')} value={injPlayer} onChange={e => setInjPlayer(e.target.value)}>
                     <option value="">— speelster —</option>
                     {injOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
                   </select>
-                  <select className="input" style={css('max-width:190px')} value={injFrom} onChange={e => setInjFrom(e.target.value)}>
+                  <select className="input" aria-label="Vanaf kwart" style={css('max-width:190px')} value={injFrom} onChange={e => setInjFrom(e.target.value)}>
                     {injFromOptions.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                   </select>
                   <button type="button" className="btn btn-primary" disabled={readOnly} onClick={applyInjury}>Herindelen</button>
@@ -1355,7 +1355,7 @@ export default function App() {
                         <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
                           {row.cells.map(cell => (
                             <div key={cell.key} style={css(cell.style)}>
-                              <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)')}>{cell.pos}</div>
+                              <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
                               <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
                               <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
                             </div>
@@ -1366,7 +1366,7 @@ export default function App() {
                     <div style={css('display:flex;flex-direction:column;gap:5px;padding-top:8px;font-size:15px')}>
                       {h.notes.map(n => (
                         <div key={n.key} style={css(n.style)}>
-                          <div style={css('letter-spacing:0.1em;text-transform:uppercase;font-size:11px;color:var(--color-neutral-600)')}>{n.label}</div>
+                          <div style={css('letter-spacing:0.1em;text-transform:uppercase;font-size:11px;color:var(--color-neutral-700)')}>{n.label}</div>
                           <div style={css('line-height:1.35;text-wrap:pretty')}>{n.text}</div>
                         </div>
                       ))}
@@ -1515,23 +1515,23 @@ export default function App() {
               <tbody>
                 {fixtureRows.map(f => (
                   <tr key={f.key}>
-                    <td><input className="input" type="date" disabled={readOnly} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} /></td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-600)' }}>{f.day}</td>
-                    <td><input className="input" type="time" disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} /></td>
+                    <td><input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} /></td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.day}</td>
+                    <td><input className="input" type="time" aria-label={`Tijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} /></td>
                     <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
                       <span style={css(f.homeStyle)}>{f.homeName}</span>
-                      <span style={{ color: 'var(--color-neutral-500)' }}> – </span>
+                      <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
                       <span style={css(f.awayStyle)}>{f.awayName}</span>
                       <div style={css('padding-top:3px')}><button type="button" disabled={readOnly} onClick={f.toggleFriendly} style={css(f.friendlyStyle)}>Oefenwedstrijd</button></div>
                     </td>
                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                      <input className="input" type="number" min="0" disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.gf} onChange={f.onGf} />
+                      <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.gf} onChange={f.onGf} />
                       <span style={{ padding: '0 3px' }}>–</span>
-                      <input className="input" type="number" min="0" disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.ga} onChange={f.onGa} />
+                      <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.ga} onChange={f.onGa} />
                     </td>
                     <td style={{ textAlign: 'center' }}>{f.points}</td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-secondary" disabled={readOnly} style={{ padding: '3px 10px' }} onClick={f.plan}>{f.planLabel}</button></td>
-                    <td style={{ textAlign: 'center', color: 'var(--color-neutral-600)', whiteSpace: 'nowrap' }}>{f.status} <button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={f.remove}>×</button></td>
+                    <td style={{ textAlign: 'center', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.status} <button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={f.remove}>×</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1590,7 +1590,7 @@ export default function App() {
                     <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}</td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     <td style={{ textAlign: 'center' }}>
-                      <select className="input" style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
+                      <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
                         {LEVELS.map(lv => <option key={lv.v} value={lv.v}>{lv.label}</option>)}
                       </select>
                     </td>
@@ -1630,7 +1630,7 @@ export default function App() {
                     <td style={{ textAlign: 'left' }}><input className="input" type="text" disabled={readOnly} style={css('padding:4px 6px;min-width:140px')} value={r.role} onChange={r.onRoleChange} placeholder="Rolnaam" /></td>
                     {r.cells.map(c => (
                       <td key={c.key}>
-                        <select className="input" disabled={readOnly} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
+                        <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
                           {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
                         </select>
@@ -1653,7 +1653,7 @@ export default function App() {
                     <td style={{ textAlign: 'left' }}><input className="input" type="text" disabled={readOnly} style={css('padding:4px 6px;min-width:140px')} value={r.role} onChange={r.onRoleChange} placeholder="Rolnaam" /></td>
                     {r.cells.map(c => (
                       <td key={c.key}>
-                        <select className="input" disabled={readOnly} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
+                        <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
                           {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
                         </select>
@@ -1726,7 +1726,7 @@ export default function App() {
                 {teams.map(t => (
                   <tr key={t.id}>
                     <td style={{ textAlign: 'left' }}>{t.name}</td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-600)', fontFamily: 'monospace' }}>{t.id}</td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', fontFamily: 'monospace' }}>{t.id}</td>
                     {isAdmin && (
                       <td style={{ textAlign: 'center' }}>
                         <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={async () => {
@@ -1739,7 +1739,7 @@ export default function App() {
                     )}
                   </tr>
                 ))}
-                {!teams.length && <tr><td colSpan={isAdmin ? 3 : 2} style={{ color: 'var(--color-neutral-600)' }}>Nog geen teams.</td></tr>}
+                {!teams.length && <tr><td colSpan={isAdmin ? 3 : 2} style={{ color: 'var(--color-neutral-700)' }}>Nog geen teams.</td></tr>}
               </tbody>
             </table>
           </div>

@@ -261,13 +261,18 @@ figcaption {
 }
 .btn svg { display: block; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn-primary { background: var(--color-accent); color: var(--color-bg); }
-.btn-primary:hover { background: var(--color-accent-600); }
-.btn-primary:active { background: var(--color-accent-700); }
+/* accent-700/800/900 rather than the bare --color-accent: white button text on
+   the bare accent only measures 3.65:1 (WCAG AA needs 4.5:1 for normal text) -
+   see ai/accessibility-testing.md. */
+.btn-primary { background: var(--color-accent-700); color: var(--color-bg); }
+.btn-primary:hover { background: var(--color-accent-800); }
+.btn-primary:active { background: var(--color-accent-900); }
 .btn-secondary { border-color: var(--color-divider); }
 .btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
-.btn-ghost { color: var(--color-accent); padding-inline: var(--space-1); }
+/* accent-700, not the bare --color-accent: that only measures 3.37:1 against
+   --color-surface (needs 4.5:1) - see ai/accessibility-testing.md. */
+.btn-ghost { color: var(--color-accent-700); padding-inline: var(--space-1); }
 .btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
 .btn-ghost:active { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
 .btn-icon { width: 36px; height: 36px; padding: 0; }
@@ -365,7 +370,9 @@ textarea.input { min-height: 90px; resize: vertical; }
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th {
   text-align: left; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  /* 70%, not 60%: at this bold 11px size, 60% measures 4.23:1 against
+     --color-bg (WCAG AA needs 4.5:1) - see ai/accessibility-testing.md. */
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
   padding: var(--space-2); border-bottom: 1px solid var(--color-divider);
 }
 .table td {
