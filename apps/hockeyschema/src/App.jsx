@@ -968,10 +968,11 @@ export default function App() {
   }
 
   const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
+  const kpCount = players.filter(pl => pl.fixedKeeper).length;
   const teamRows = players.map(p => ({
     key: p.id,
     name: p.first + ' ' + p.last,
-    posCount: Object.values(p.prefs).filter(Boolean).length,
+    posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
     subLabel: p.sub ? 'Invaller' : 'Vast',
@@ -1718,7 +1719,7 @@ export default function App() {
                   <th>Type</th>
                   <th>Niveau</th>
                   {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
-                  <th style={{ fontSize: '12px' }}>KP</th>
+                  <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
                   <th></th>
                 </tr>
               </thead>
