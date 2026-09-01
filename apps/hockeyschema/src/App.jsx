@@ -1924,8 +1924,15 @@ export default function App() {
                     )}
                     <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
                       <div className="field" style={css('margin:0;flex:1;min-width:200px')}>
-                        <label htmlFor={`coach-email-${t.id}`}>E-mailadres</label>
-                        <input className="input" id={`coach-email-${t.id}`} name={`coach-email-${t.id}`} type="email" autoComplete="off" value={coachEmailByTeam[t.id] || ''}
+                        <label htmlFor={`coach-contact-${t.id}`}>E-mailadres</label>
+                        {/* type="text" + inputMode="email", not type="email": Chrome's address-autofill
+                            keys heavily off type="email" (autoComplete="off" alone does NOT suppress it -
+                            Chrome deliberately ignores "off" for its own address/contact autofill) and,
+                            once one of several identically-labeled fields on the page is filled from a
+                            suggestion, fills every other field it also recognizes as "email" with the same
+                            value. inputMode keeps the email keyboard on mobile; the name/id deliberately
+                            avoid the word "email" too, since that's part of the same heuristic. */}
+                        <input className="input" id={`coach-contact-${t.id}`} name={`coach-contact-${t.id}`} type="text" inputMode="email" autoComplete="off" value={coachEmailByTeam[t.id] || ''}
                           onChange={e => setCoachEmailByTeam(m => ({ ...m, [t.id]: e.target.value }))} />
                       </div>
                       <button type="button" className="btn btn-secondary" disabled={coachBusyByTeam[t.id]} onClick={() => addCoach(t.id)}>
