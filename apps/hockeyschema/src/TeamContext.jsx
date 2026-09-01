@@ -2,12 +2,13 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase.js';
 import { useAuth } from './AuthContext.jsx';
+import { DEFAULT_SC } from './scDefaults.js';
 
 const TeamCtx = createContext(null);
 
 const BLANK_PUBLIC_STATE = {
   players: [],
-  sc: { verdedigen: [], aanval: [] },
+  sc: DEFAULT_SC,
   fixtures: [],
   match: { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null },
 };
