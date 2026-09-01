@@ -50,3 +50,35 @@ exports.addCoachToTeam = onCall(async (request) => {
 
   return { uid: userRecord.uid, created };
 });
+
+// Anyone (including logged-out visitors) may refresh a team's standings - it's public,
+// read-only data. The LISA credential it needs (teams/{teamId}/config/lisa) is only
+// Firestore-readable by that team's own members though, so this has to fetch server-side
+// with the Admin SDK rather than the client doing the LISA call itself. Writes only the
+// two standings fields via update() (not the full state/public doc), so this can never
+// clobber players/fixtures/match/etc. even under a race with someone else editing them.
+exports.refreshTeamStandings = onCall(async (request) => {
+  const teamId = String((request.data || {}).teamId || '').trim();
+  if (!teamId) throw new HttpsError('invalid-argument', 'Team is verplicht.');
+
+  const lisaSnap = await admin.firestore().doc(`teams/${teamId}/config/lisa`).get();
+  if (!lisaSnap.exists) throw new HttpsError('failed-precondition', 'Geen koppeling met de clubwebsite voor dit team.');
+  const { clubDudaId, teamId: lisaTeamId, authHeader } = lisaSnap.data();
+
+  let res;
+  try {
+    const url = `https://api.lisahockey.nl/v1/duda/${clubDudaId}/teams/${lisaTeamId}/poules`;
+    res = await fetch(url, { headers: { authorization: authHeader, accept: '*/*' } });
+  } catch (err) {
+    throw new HttpsError('internal', 'Stand ophalen mislukt.');
+  }
+  if (!res.ok) throw new HttpsError('internal', 'Stand ophalen mislukt (http ' + res.status + ').');
+  const data = await res.json();
+  const standings = data.teams || [];
+  if (!standings.length) throw new HttpsError('not-found', 'Geen stand gevonden.');
+
+  const standingsUpdatedAt = new Date().toISOString();
+  await admin.firestore().doc(`teams/${teamId}/state/public`).update({ standings, standingsUpdatedAt });
+
+  return { standings, standingsUpdatedAt };
+});

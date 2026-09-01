@@ -523,21 +523,19 @@ export default function App() {
   // Standen komen van dezelfde LISA-koppeling als de wedstrijd-import, maar worden
   // gecached in het publieke teamdocument (hierboven) zodat ook uitgelogde bezoekers
   // ze kunnen zien zonder de auth-sleutel van de clubsite bloot te geven.
+  // Iedereen mag verversen - de Cloud Function doet de LISA-aanroep server-side (de
+  // auth-sleutel in teams/{teamId}/config/lisa is alleen leesbaar voor teamleden) en
+  // schrijft alleen de standen terug; het resultaat komt via de bestaande onSnapshot op
+  // state/public vanzelf binnen, dus hier hoeft niets lokaal te worden bijgewerkt.
   async function refreshStandings() {
-    if (readOnly || !lisaConfig) return;
+    if (!currentTeamId) return;
     setStandingsBusy(true);
     setStandingsError('');
     try {
-      const url = `https://api.lisahockey.nl/v1/duda/${lisaConfig.clubDudaId}/teams/${lisaConfig.teamId}/poules`;
-      const res = await fetch(url, { headers: { authorization: lisaConfig.authHeader, accept: '*/*' } });
-      if (!res.ok) throw new Error('http ' + res.status);
-      const data = await res.json();
-      const rows = data.teams || [];
-      if (!rows.length) { setStandingsError('Geen stand gevonden.'); return; }
-      setStandings(rows);
-      setStandingsUpdatedAt(new Date().toISOString());
+      const call = httpsCallable(functions, 'refreshTeamStandings');
+      await call({ teamId: currentTeamId });
     } catch (e) {
-      setStandingsError('Stand ophalen mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
+      setStandingsError(e.message || 'Stand ophalen mislukt.');
     } finally {
       setStandingsBusy(false);
     }
@@ -1643,25 +1641,17 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Standen</h2>
 
-          {isMyTeam && (
-            <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-              {lisaConfig ? (
-                <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
-                  <button type="button" className="btn btn-secondary" disabled={standingsBusy} onClick={refreshStandings}>{standingsBusy ? 'Bezig…' : 'Ververs stand'}</button>
-                  {standingsUpdatedAt && (
-                    <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
-                      Bijgewerkt op {new Date(standingsUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
-                  Koppel eerst de clubwebsite (bij Teams) om de stand te kunnen ophalen.
-                </p>
+          <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
+              <button type="button" className="btn btn-secondary" disabled={standingsBusy} onClick={refreshStandings}>{standingsBusy ? 'Bezig…' : 'Ververs stand'}</button>
+              {standingsUpdatedAt && (
+                <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                  Bijgewerkt op {new Date(standingsUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                </span>
               )}
-              {standingsError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{standingsError}</div>}
             </div>
-          )}
+            {standingsError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{standingsError}</div>}
+          </div>
 
           {!standings.length ? (
             <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
@@ -1742,9 +1732,9 @@ export default function App() {
                       </td>
                     )}
                     {r.cells.map(c => (
-                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" disabled={readOnly} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
+                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} disabled={readOnly} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
                     ))}
-                    <td style={{ textAlign: 'center' }}><input type="checkbox" checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
+                    <td style={{ textAlign: 'center' }}><input type="checkbox" aria-label={`Vaste keeper: ${r.name}`} checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
                   </tr>
                 ))}
