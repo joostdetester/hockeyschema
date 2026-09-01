@@ -1325,7 +1325,7 @@ export default function App() {
               )}
 
               <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
-                <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Blessure — schema opnieuw indelen</div>
+                <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Uitvallers — schema opnieuw indelen</div>
                 <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
                   <select className="input" aria-label="Speelster" style={css('max-width:220px')} value={injPlayer} onChange={e => setInjPlayer(e.target.value)}>
                     <option value="">— speelster —</option>
