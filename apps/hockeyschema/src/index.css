@@ -7,6 +7,10 @@ input[type="number"] { -moz-appearance: textfield; }
   body { background: #fff; }
   [data-sheet] { padding: 0 !important; }
   [data-halfcard] { break-inside: avoid; }
+  /* On screen the position blocks are told apart by their (colored) background fill
+     alone - printers commonly skip background colors by default, so give every block
+     an explicit border for print regardless of what its on-screen background/border was. */
+  [data-poscell] { border: 1px solid var(--color-text) !important; }
   [data-halfcard] h3 { font-size: 26px !important; }
   [data-halfcard] div[style*="font-size: 16px"] { font-size: 20px !important; }
   [data-halfcard] div[style*="font-size: 10px"] { font-size: 13px !important; }

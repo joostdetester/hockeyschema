@@ -126,8 +126,13 @@ jobs:
       # GCP IAM service accounts by hand). Repo-level secret, not per-
       # environment - one CI-account token covers all three Firebase
       # projects since they're all under the same Firebase account.
-      - name: Deploy to Firebase Hosting
-        run: npx firebase-tools deploy --only hosting --project "${{ needs.resolve.outputs.firebase_project }}" --token "$FIREBASE_TOKEN" --non-interactive
+      # firestore:rules alongside hosting - the security rules are as much a part of
+      # what this app needs deployed as the hosting bundle (e.g. the settings/app doc
+      # the default-team feature reads/writes only works once its rule is live).
+      # functions deploys apps/hockeyschema/functions - the CLI runs its own `npm
+      # install` there first (see firebase.json's functions.predeploy).
+      - name: Deploy to Firebase Hosting, Firestore rules and Functions
+        run: npx firebase-tools deploy --only hosting,firestore:rules,functions --project "${{ needs.resolve.outputs.firebase_project }}" --token "$FIREBASE_TOKEN" --non-interactive
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
 

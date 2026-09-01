@@ -1,7 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
+
+const MAX_LOGINS_KEPT = 50;
 
 const AuthCtx = createContext(null);
 
@@ -29,7 +31,16 @@ export function AuthProvider({ children }) {
   }, [user]);
 
   async function login(email, password) {
-    await signInWithEmailAndPassword(auth, email, password);
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    // Best-effort: record this successful sign-in for the admin's inlogpogingen overview.
+    // Never let a hiccup here fail the login itself - the user is already authenticated.
+    try {
+      const ref = doc(db, 'users', cred.user.uid);
+      const snap = await getDoc(ref);
+      const previous = (snap.data() || {}).logins || [];
+      const logins = [new Date().toISOString(), ...previous].slice(0, MAX_LOGINS_KEPT);
+      await setDoc(ref, { logins }, { merge: true });
+    } catch (e) { /* recording the login is not essential */ }
   }
   function logout() {
     return signOut(auth);

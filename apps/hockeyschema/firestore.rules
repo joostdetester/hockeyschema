@@ -22,8 +22,17 @@ service cloud.firestore {
       allow write: if isTeamMember(teamId);
     }
     match /users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if false;
+      allow read: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      // Admin can change anything; a user may additionally touch their own doc, but only
+      // the logins field (recording their own successful sign-ins) - not teamId/role/email.
+      allow write: if isAdmin() || (
+        request.auth != null && request.auth.uid == uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['logins'])
+      );
+    }
+    match /settings/app {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }
