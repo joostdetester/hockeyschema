@@ -2,49 +2,18 @@
 Feature: Accessibility
 
   # This app has no separate routes - "Programma" is the tab shown on load,
-  # so the existing homepage scan already covers it. Every other tab below
-  # is reachable by an anonymous (logged-out) visitor - see App.jsx: only
-  # Team/Historie/Afspraken gate their content behind team membership, and
-  # even then they render an access-gate card rather than nothing, which is
-  # itself worth scanning. Scans stay logged-out throughout, per
-  # ai/accessibility-testing.md's caution against a11y scans touching
-  # authenticated/stateful flows on a shared account.
+  # so the existing homepage scan already covers it. Wedstrijdschema,
+  # Strafcorner, Historie, Afspraken and Teams aren't even in the menu for an
+  # anonymous (logged-out) visitor - see App.jsx's LOGGED_IN_ONLY_TABS - so
+  # they're not scanned here. Team and Ouders stay in the menu and are fully
+  # public (Ouders is deliberately readable by parents without an account -
+  # editing is gated separately, per-field, behind canManageOuders). Scans
+  # stay logged-out throughout, per ai/accessibility-testing.md's caution
+  # against a11y scans touching authenticated/stateful flows on a shared
+  # account.
 
   Scenario Outline: Homepage meets WCAG level <level>
     Given the user opens the homepage
-    Then the page meets WCAG level <level>
-
-    Examples:
-      | level |
-      | A     |
-      | AA    |
-      | AAA   |
-
-  Scenario Outline: Wedstrijdschema tab meets WCAG level <level>
-    Given the user opens the homepage
-    When the user opens the "Wedstrijdschema" tab
-    Then the page meets WCAG level <level>
-
-    Examples:
-      | level |
-      | A     |
-      | AA    |
-      | AAA   |
-
-  Scenario Outline: Strafcorner tab meets WCAG level <level>
-    Given the user opens the homepage
-    When the user opens the "Strafcorner" tab
-    Then the page meets WCAG level <level>
-
-    Examples:
-      | level |
-      | A     |
-      | AA    |
-      | AAA   |
-
-  Scenario Outline: Teams tab meets WCAG level <level>
-    Given the user opens the homepage
-    When the user opens the "Teams" tab
     Then the page meets WCAG level <level>
 
     Examples:
@@ -64,20 +33,9 @@ Feature: Accessibility
       | AA    |
       | AAA   |
 
-  Scenario Outline: Historie tab (logged out) meets WCAG level <level>
+  Scenario Outline: Ouders tab (logged out) meets WCAG level <level>
     Given the user opens the homepage
-    When the user opens the "Historie" tab
-    Then the page meets WCAG level <level>
-
-    Examples:
-      | level |
-      | A     |
-      | AA    |
-      | AAA   |
-
-  Scenario Outline: Afspraken tab (logged out) meets WCAG level <level>
-    Given the user opens the homepage
-    When the user opens the "Afspraken" tab
+    When the user opens the "Ouders" tab
     Then the page meets WCAG level <level>
 
     Examples:

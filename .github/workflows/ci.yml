@@ -89,8 +89,8 @@ jobs:
   # below then test the change that actually triggered this run - not
   # whatever was deployed previously. Only runs on push (i.e. after a merge
   # lands on test/acceptance/main): a pull_request run has nothing new to
-  # deploy yet, and still tests the currently-live site as a sanity check,
-  # same as before this job existed.
+  # deploy yet, and Playwright/Accessibility below are skipped entirely on
+  # pull_request for the same reason (see their own comments).
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
@@ -156,9 +156,16 @@ jobs:
     name: Accessibility
     runs-on: ubuntu-latest
     needs: [lint, typecheck, resolve, deploy]
-    # deploy is skipped (not failed) on a pull_request run - only block on
-    # an actual deploy failure, not on it having been skipped.
-    if: always() && needs.lint.result == 'success' && needs.typecheck.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
+    # Only runs on push. A pull_request run has no fresh deploy (see deploy's
+    # own `if`), so it would test whatever is *currently* live on the target
+    # environment - the wrong thing once the PR's own test code exercises UI
+    # that isn't deployed there yet: that combination produced a spurious
+    # failure promoting to acceptance once the Ouders tab landed on test
+    # but not yet on acceptance, blocking the promotion PR. Required-check
+    # coverage for this commit still comes from the push run on its source
+    # branch - GitHub matches required checks by commit SHA, not by which
+    # run produced them.
+    if: always() && github.event_name == 'push' && needs.lint.result == 'success' && needs.typecheck.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
     defaults:
       run:
         working-directory: tests/hockeyschema
@@ -219,7 +226,8 @@ jobs:
     name: Playwright
     runs-on: ubuntu-latest
     needs: [lint, typecheck, resolve, deploy]
-    if: always() && needs.lint.result == 'success' && needs.typecheck.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
+    # Only runs on push - see Accessibility's `if` above for why.
+    if: always() && github.event_name == 'push' && needs.lint.result == 'success' && needs.typecheck.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
     defaults:
       run:
         working-directory: tests/hockeyschema
