@@ -293,7 +293,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, friendly: false });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
-  const [printOptions, setPrintOptions] = useState({ wissels: false, strafcorner: false, speeltijd: false });
+  const [printOptions, setPrintOptions] = useState({ strafcorner: false, speeltijd: false });
   const [history, setHistory] = useState([]);
   const [match, setMatch] = useState(BLANK_MATCH);
   const [editing, setEditing] = useState(null);
@@ -718,27 +718,6 @@ export default function App() {
     });
   };
 
-  const switchLog = [];
-  if (sched) {
-    for (let i = 1; i < sched.length; i++) {
-      const prevIds = ids(sched[i - 1]), curIds = ids(sched[i]);
-      const out = prevIds.filter(x => curIds.indexOf(x) < 0);
-      const inn = curIds.filter(x => prevIds.indexOf(x) < 0);
-      if (!out.length && !inn.length) continue;
-      const q = Math.floor(i / 2);
-      const atStart = i % 2 === 0;
-      const t = atStart ? q * QUARTER_MIN : q * QUARTER_MIN + QUARTER_MIN / 2;
-      const hh = Math.floor(t), mm = Math.round((t % 1) * 60);
-      switchLog.push({
-        key: i,
-        time: hh + ':' + String(mm).padStart(2, '0'),
-        moment: atStart ? 'start ' + (q + 1) + 'e kwart' : 'halverwege ' + (q + 1) + 'e kwart',
-        out: out.length ? nm(out) : '—',
-        inn: inn.length ? nm(inn) : '—'
-      });
-    }
-  }
-
   const halves = [0, 1, 2, 3].filter(q => sched && sched[2 * q + 1]).map(q => {
     const a = sched[2 * q], b = sched[2 * q + 1];
     const prevBlk = q > 0 ? sched[2 * q - 1] : null;
@@ -989,8 +968,8 @@ export default function App() {
   };
   const scSummary = group => (sc[group] || []).map(r => {
     const selIds = m.selected || [];
-    const availId = (r.picks || []).find(pid => pid && selIds.indexOf(pid) >= 0);
-    return { key: r.id, role: r.role, names: availId ? nameOf(availId) : '—' };
+    const availIds = (r.picks || []).filter(pid => pid && selIds.indexOf(pid) >= 0);
+    return { key: r.id, role: r.role, names: availIds.length ? availIds.map(id => nameOf(id)).join(', ') : '—' };
   });
 
   const totals = {};
@@ -1249,13 +1228,15 @@ export default function App() {
               )}
             </div>
             <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-              <input type="checkbox" checked={!!m.keeperSwitches} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keeperSwitches: e.target.checked, keeper2Id: e.target.checked ? m.keeper2Id : '', schedule: null })} />
+              <input type="checkbox" checked={!!m.keeperSwitches} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keeperSwitches: e.target.checked, keeper2Id: e.target.checked ? m.keeper2Id : '', keepersPlayOut: e.target.checked ? m.keepersPlayOut : false, schedule: null })} />
               <span>Keeper wisselt na 2 kwarten (na de rust)</span>
             </label>
-            <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-              <input type="checkbox" checked={!!m.keepersPlayOut} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keepersPlayOut: e.target.checked, schedule: null })} />
-              <span>Keepers spelen in de helft dat ze niet keepen mee in het veld</span>
-            </label>
+            {m.keeperSwitches && (
+              <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
+                <input type="checkbox" checked={!!m.keepersPlayOut} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keepersPlayOut: e.target.checked, schedule: null })} />
+                <span>Keepers spelen in de helft dat ze niet keepen mee in het veld</span>
+              </label>
+            )}
             <div className="card elev-sm" style={css('padding:var(--space-3) var(--space-4)')}>
               <p style={css('margin:0;font-size:16px;max-width:65ch;text-wrap:pretty')}>{keeperHint}</p>
             </div>
@@ -1304,10 +1285,6 @@ export default function App() {
                   <div className="dialog" onClick={e => e.stopPropagation()}>
                     <div className="dialog-title">Wat wil je meeprinten?</div>
                     <p className="dialog-body" style={css('margin:0')}>Het schema zelf wordt altijd geprint. Kies welke onderdelen daarnaast mee moeten.</p>
-                    <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-                      <input type="checkbox" checked={printOptions.wissels} onChange={e => setPrintOptions(o => ({ ...o, wissels: e.target.checked }))} />
-                      <span>Wisselmomenten</span>
-                    </label>
                     <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
                       <input type="checkbox" checked={printOptions.strafcorner} onChange={e => setPrintOptions(o => ({ ...o, strafcorner: e.target.checked }))} />
                       <span>Strafcorner</span>
@@ -1425,23 +1402,6 @@ export default function App() {
                     </div>
                   </article>
                 ))}
-              </div>
-
-              <div data-noprint={printOptions.wissels ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-                <h3 style={css('font-family:var(--font-heading);font-size:22px;margin:0;font-weight:600')}>Wisselmomenten — in één oogopslag</h3>
-                <table className="table">
-                  <thead><tr><th style={{ textAlign: 'left' }}>Tijd</th><th style={{ textAlign: 'left' }}>Moment</th><th style={{ textAlign: 'left' }}>Eruit</th><th style={{ textAlign: 'left' }}>Erin</th></tr></thead>
-                  <tbody>
-                    {switchLog.map(sw => (
-                      <tr key={sw.key}>
-                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{sw.time}</td>
-                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{sw.moment}</td>
-                        <td style={{ textAlign: 'left', color: '#a32020' }}>{sw.out}</td>
-                        <td style={{ textAlign: 'left', color: '#1c6b3d' }}>{sw.inn}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
 
               <div data-noprint={printOptions.strafcorner ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
