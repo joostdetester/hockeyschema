@@ -34,7 +34,7 @@ const POS = [
 const PMAP = {};
 POS.forEach(p => { PMAP[p.k] = p; });
 const FILL_ORDER = ['SP', 'MM', 'VS', 'LM', 'RV', 'RH', 'RA', 'LV', 'LH', 'LA'];
-const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['VS'], ['LA', 'LM', 'RA']];
+const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['LA', 'VS', 'RA'], ['LM']];
 const ZONE_W = { as: 1.0, rechts: 0.6, links: 0.3 };
 const QUARTER_MIN = 17.5;
 
