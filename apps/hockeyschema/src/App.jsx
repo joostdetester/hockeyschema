@@ -1925,7 +1925,7 @@ export default function App() {
                     <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
                       <div className="field" style={css('margin:0;flex:1;min-width:200px')}>
                         <label htmlFor={`coach-email-${t.id}`}>E-mailadres</label>
-                        <input className="input" id={`coach-email-${t.id}`} type="email" value={coachEmailByTeam[t.id] || ''}
+                        <input className="input" id={`coach-email-${t.id}`} name={`coach-email-${t.id}`} type="email" autoComplete="off" value={coachEmailByTeam[t.id] || ''}
                           onChange={e => setCoachEmailByTeam(m => ({ ...m, [t.id]: e.target.value }))} />
                       </div>
                       <button type="button" className="btn btn-secondary" disabled={coachBusyByTeam[t.id]} onClick={() => addCoach(t.id)}>
