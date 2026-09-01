@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef } from 'react';
 import { doc, onSnapshot, setDoc, getDoc, collection } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { sendPasswordResetEmail } from 'firebase/auth';
@@ -311,15 +311,19 @@ export default function App() {
   const [standingsBusy, setStandingsBusy] = useState(false);
   const [standingsError, setStandingsError] = useState('');
   const [selectedPouleId, setSelectedPouleId] = useState(null);
+  const [showPastOuders, setShowPastOuders] = useState(false);
   const migratedRef = useRef(false);
 
   // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin) - een
-  // manager telt hier bewust niet mee, die krijgt alléén via canManageOuders hieronder
-  // toegang tot Ouders en verder niets extra's t.o.v. een gewone bezoeker.
+  // manager telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via
+  // canManageOuders hieronder specifiek het bewerken van Ouders.
   const isMyTeam = !!user && ((myTeamId === currentTeamId && role !== 'manager') || isAdmin);
   const readOnly = !isMyTeam;
   const canSeeHistory = isMyTeam;
-  const canManageOuders = isMyTeam || (!!user && role === 'manager' && myTeamId === currentTeamId);
+  // Ouders is - anders dan de rest - zichtbaar voor iedereen (ook uitgelogd), zie
+  // LOGGED_IN_ONLY_TABS hieronder. Bewerken mag alleen de manager van dit team, of een admin -
+  // bewust géén coach, die krijgt hier geen extra rechten via isMyTeam.
+  const canManageOuders = isAdmin || (!!user && role === 'manager' && myTeamId === currentTeamId);
 
   const publicSyncRef = useRef('');
   const managerFixturesSyncRef = useRef('');
@@ -709,11 +713,12 @@ export default function App() {
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
-  // Wedstrijdschema, Strafcorner, Historie, Afspraken, Ouders en Teams zijn alleen zinvol voor
-  // wie ingelogd is (de inhoud erachter is toch afgeschermd tot het eigen team /
-  // adminrechten) - een anonieme bezoeker krijgt deze items daarom niet eens in het menu te
-  // zien.
-  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'ouders', 'teams'];
+  // Wedstrijdschema, Strafcorner, Historie, Afspraken en Teams zijn alleen zinvol voor wie
+  // ingelogd is (de inhoud erachter is toch afgeschermd tot het eigen team / adminrechten) -
+  // een anonieme bezoeker krijgt deze items daarom niet eens in het menu te zien. Ouders is
+  // bewust wél voor iedereen zichtbaar (ook uitgelogd) - dat is juist waar ouders zonder
+  // account kunnen zien wie de pauzehap heeft en wie er rijdt.
+  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'teams'];
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
@@ -1144,29 +1149,57 @@ export default function App() {
     };
   });
 
-  const ouderRows = fixturesSorted.map(f => {
+  const RIJDER_SLOTS = 4;
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const nlDate = d => d && d.length === 10 ? d.slice(8, 10) + '-' + d.slice(5, 7) + '-' + d.slice(0, 4) : '?';
+  // Hoeveel pauzehappen een speelster dit seizoen al heeft gedaan (los van deze rij) - laat
+  // zien als "(1)"/"(2)" achter haar naam in de keuzelijst, zodat eerlijk verdelen makkelijker
+  // is. Telt alle wedstrijden mee (verleden én toekomst), behalve de rij die je nu bekijkt.
+  const pauzehapCount = (playerId, excludeFixtureId) =>
+    fixtures.filter(x => x.id !== excludeFixtureId && x.pauzehapId === playerId).length;
+
+  const ouderRowsAll = fixturesSorted.map(f => {
     const upd = obj => { if (!canManageOuders) return; setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
     const rijders = f.rijders || [];
+    const isPast = !!f.date && f.date < todayISO;
+    const mapsUrl = !f.home && f.opponent
+      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(f.opponent + ' hockeyclub')
+      : null;
     return {
       key: f.id,
-      label: (f.date || '?') + ' · ' + (f.opponent || 'tegenstander ?') + (f.home ? ' (thuis)' : ' (uit)'),
+      isPast,
+      home: !!f.home,
+      waar: f.home ? 'Thuis' : (f.opponent || 'tegenstander ?'),
+      datum: nlDate(f.date),
+      verzameltijd: f.verzameltijd || '',
+      onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
+      startTijd: f.time ? f.time + ' uur' : '—',
       pauzehapId: f.pauzehapId || '',
       onPauzehap: e => upd({ pauzehapId: e.target.value || null }),
-      rijdersChips: players.map(p => {
-        const on = rijders.indexOf(p.id) >= 0;
+      pauzehapOptions: players.map(p => {
+        const n = pauzehapCount(p.id, f.id);
+        return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
+      }),
+      mapsUrl,
+      rijderSlots: f.home ? [] : Array.from({ length: RIJDER_SLOTS }, (_, i) => {
+        const chosenElsewhere = rijders.filter((id, j) => j !== i && id);
         return {
-          key: p.id,
-          label: displayFirst(p),
-          on,
-          toggle: () => upd({ rijders: on ? rijders.filter(x => x !== p.id) : rijders.concat([p.id]) }),
-          style: 'cursor:pointer;white-space:nowrap;font-family:var(--font-body);font-size:14px;padding:4px 10px;border-radius:var(--radius-md);'
-            + (on
-              ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)'
-              : 'background:transparent;color:var(--color-neutral-700);border:1px solid var(--color-neutral-400)')
+          key: i,
+          label: `Rijder ${i + 1}`,
+          value: rijders[i] || '',
+          options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0),
+          onChange: e => {
+            const next = rijders.slice(0, RIJDER_SLOTS);
+            while (next.length < RIJDER_SLOTS) next.push(null);
+            next[i] = e.target.value || null;
+            upd({ rijders: next });
+          },
         };
       }),
     };
   });
+  const ouderRows = showPastOuders ? ouderRowsAll : ouderRowsAll.filter(r => !r.isPast);
+  const pastOuderCount = ouderRowsAll.length - ouderRowsAll.filter(r => !r.isPast).length;
 
   const matchOptions = fixturesSorted.map(f => {
     const d = f.date ? new Date(f.date + 'T12:00:00') : null;
@@ -1792,40 +1825,61 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'ouders' && (canManageOuders ? (
+      {tab === 'ouders' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
           <div>
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Ouders</h2>
-            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per wedstrijd wie de pauzehap meeneemt en welke ouders rijden bij uitwedstrijden.</p>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per wedstrijd wie de pauzehap meeneemt en, bij uitwedstrijden, welke ouders rijden.</p>
           </div>
+          {pastOuderCount > 0 && (
+            <label style={css('display:flex;align-items:center;gap:6px;font-size:15px;cursor:pointer')}>
+              <input type="checkbox" checked={showPastOuders} onChange={e => setShowPastOuders(e.target.checked)} />
+              <span>Ook {pastOuderCount} gespeelde wedstrijd{pastOuderCount === 1 ? '' : 'en'} tonen</span>
+            </label>
+          )}
           {ouderRows.length ? (
             <div style={css('display:flex;flex-direction:column;gap:var(--space-5)')}>
               {ouderRows.map(r => (
-                <div key={r.key} className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-                  <div className="card-title">{r.label}</div>
-                  <div className="field" style={css('max-width:320px;margin:0')}>
-                    <label htmlFor={`pauzehap-${r.key}`}>Pauzehap</label>
-                    <select className="input" id={`pauzehap-${r.key}`} value={r.pauzehapId} onChange={r.onPauzehap}>
-                      <option value="">—</option>
-                      {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <div style={css('font-size:13px;color:var(--color-neutral-700);margin-bottom:4px')}>Rijden</div>
-                    <div style={css('display:flex;flex-wrap:wrap;gap:6px')}>
-                      {r.rijdersChips.map(c => (
-                        <button key={c.key} type="button" style={css(c.style)} onClick={c.toggle} aria-pressed={c.on}>{c.label}</button>
-                      ))}
-                    </div>
-                  </div>
+                <div key={r.key} className="card elev-sm" style={css('display:flex;gap:var(--space-4);flex-wrap:wrap;justify-content:space-between')}>
+                  <dl style={css('margin:0;display:grid;grid-template-columns:auto auto;gap:6px var(--space-3);align-items:center')}>
+                    <dt style={css('font-weight:600')}>Waar</dt><dd style={css('margin:0')}>{r.waar}</dd>
+                    <dt style={css('font-weight:600')}>Datum</dt><dd style={css('margin:0')}>{r.datum}</dd>
+                    <dt style={css('font-weight:600')}><label htmlFor={`verzameltijd-${r.key}`}>Verzameltijd</label></dt>
+                    <dd style={css('margin:0;display:flex;align-items:center;gap:6px')}><input className="input" id={`verzameltijd-${r.key}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} /> uur</dd>
+                    <dt style={css('font-weight:600')}>Start tijd</dt><dd style={css('margin:0')}>{r.startTijd}</dd>
+                    <dt style={css('font-weight:600')}><label htmlFor={`pauzehap-${r.key}`}>Pauzehap</label></dt>
+                    <dd style={css('margin:0')}>
+                      <select className="input" id={`pauzehap-${r.key}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
+                        <option value="">—</option>
+                        {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                      </select>
+                    </dd>
+                    {r.rijderSlots.map(s => (
+                      <Fragment key={s.key}>
+                        <dt style={css('font-weight:600')}><label htmlFor={`rijder-${r.key}-${s.key}`}>{s.label}</label></dt>
+                        <dd style={css('margin:0')}>
+                          <select className="input" id={`rijder-${r.key}-${s.key}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
+                            <option value="">—</option>
+                            {s.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                          </select>
+                        </dd>
+                      </Fragment>
+                    ))}
+                  </dl>
+                  {r.mapsUrl && (
+                    <a href={r.mapsUrl} target="_blank" rel="noreferrer" className="card elev-sm" style={css('display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;text-align:center;min-width:120px;padding:var(--space-3);text-decoration:none;color:var(--color-text)')}>
+                      <span style={css('font-size:14px;font-weight:600')}>Route ↗</span>
+                      <span style={css('font-size:12px;color:var(--color-neutral-700)')}>via Google Maps</span>
+                    </a>
+                  )}
                 </div>
               ))}
             </div>
           ) : (
-            <p className="card-body" style={css('margin:0')}>Nog geen wedstrijden in het programma.</p>
+            <p className="card-body" style={css('margin:0')}>{fixtures.length ? 'Geen aankomende wedstrijden.' : 'Nog geen wedstrijden in het programma.'}</p>
           )}
         </main>
-      ) : accessGate('Ouders'))}
+      )}
 
       {tab === 'sc' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
