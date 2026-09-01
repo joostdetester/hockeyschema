@@ -3,7 +3,10 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function isAdmin() { return request.auth != null && me().role == 'admin'; }
-    function isTeamMember(teamId) { return request.auth != null && (me().teamId == teamId || isAdmin()); }
+    // isTeamMember: coach (or admin) of this team - deliberately excludes 'manager', who only
+    // gets the narrower write rule below on state/public (fixtures, for the Ouders indeling).
+    function isTeamMember(teamId) { return request.auth != null && ((me().teamId == teamId && me().role != 'manager') || isAdmin()); }
+    function isManager(teamId) { return request.auth != null && me().teamId == teamId && me().role == 'manager'; }
 
     match /teams/{teamId} {
       allow read: if true;
@@ -11,7 +14,10 @@ service cloud.firestore {
     }
     match /teams/{teamId}/state/public {
       allow read: if true;
-      allow write: if isTeamMember(teamId);
+      // A manager may only ever touch the fixtures field (Pauzehap/rijden per wedstrijd) -
+      // never players/sc/match/standings, which stay coach/admin-only via isTeamMember.
+      allow write: if isTeamMember(teamId)
+        || (isManager(teamId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fixtures']));
     }
     match /teams/{teamId}/state/history {
       allow read: if isTeamMember(teamId);

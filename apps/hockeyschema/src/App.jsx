@@ -268,7 +268,7 @@ const CELL = 'flex:0 0 31%;min-width:0;padding:5px 7px;border-radius:var(--radiu
 const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null };
 
 export default function App() {
-  const { user, myTeamId, isAdmin, logout } = useAuth();
+  const { user, myTeamId, role, isAdmin, logout } = useAuth();
   const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam, defaultTeamId, setDefaultTeam } = useTeam();
 
   const [tab, setTab] = useState('programma');
@@ -296,6 +296,7 @@ export default function App() {
   const [allUsers, setAllUsers] = useState([]);
   const [expandedUserUid, setExpandedUserUid] = useState(null);
   const [coachEmailByTeam, setCoachEmailByTeam] = useState({});
+  const [coachRoleByTeam, setCoachRoleByTeam] = useState({});
   const [coachBusyByTeam, setCoachBusyByTeam] = useState({});
   const [coachErrorByTeam, setCoachErrorByTeam] = useState({});
   const [lisaConfig, setLisaConfig] = useState(null);
@@ -310,14 +311,22 @@ export default function App() {
   const [standingsBusy, setStandingsBusy] = useState(false);
   const [standingsError, setStandingsError] = useState('');
   const [selectedPouleId, setSelectedPouleId] = useState(null);
+  const [showPastOuders, setShowPastOuders] = useState(false);
   const migratedRef = useRef(false);
 
-  // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin).
-  const isMyTeam = !!user && (myTeamId === currentTeamId || isAdmin);
+  // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin) - een
+  // manager telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via
+  // canManageOuders hieronder specifiek het bewerken van Ouders.
+  const isMyTeam = !!user && ((myTeamId === currentTeamId && role !== 'manager') || isAdmin);
   const readOnly = !isMyTeam;
   const canSeeHistory = isMyTeam;
+  // Ouders is - anders dan de rest - zichtbaar voor iedereen (ook uitgelogd), zie
+  // LOGGED_IN_ONLY_TABS hieronder. Bewerken mag alleen de manager van dit team, of een admin -
+  // bewust géén coach, die krijgt hier geen extra rechten via isMyTeam.
+  const canManageOuders = isAdmin || (!!user && role === 'manager' && myTeamId === currentTeamId);
 
   const publicSyncRef = useRef('');
+  const managerFixturesSyncRef = useRef('');
   const historySyncRef = useRef('');
 
   // Publieke teamdata (speelsters, strafcorner, programma, wedstrijd) — leesbaar voor iedereen,
@@ -328,9 +337,11 @@ export default function App() {
   useEffect(() => {
     if (!currentTeamId) { setLoadedTeamId(null); return; }
     publicSyncRef.current = '';
+    managerFixturesSyncRef.current = '';
     const unsub = onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'public'), snap => {
       const d = snap.data() || {};
       publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null });
+      managerFixturesSyncRef.current = JSON.stringify(d.fixtures || []);
       setPlayers(d.players || []);
       setSc(d.sc || { verdedigen: [], aanval: [] });
       setFixtures(d.fixtures || []);
@@ -350,6 +361,19 @@ export default function App() {
     publicSyncRef.current = json;
     setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), blob).catch(() => {});
   }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt]);
+
+  // Managers zijn geen coach (isMyTeam/readOnly geldt niet voor ze), dus de blob-sync
+  // hierboven slaat voor hen over - maar ze mogen wél de Ouders-indeling (fixtures)
+  // bewerken. Een aparte, veld-gerichte merge-write voor alleen fixtures voorkomt zowel dat
+  // een manager per ongeluk een stale kopie van players/sc/match/standings terugschrijft, als
+  // dat zo'n write de firestore.rules-eis (alleen 'fixtures' gewijzigd) zou schenden.
+  useEffect(() => {
+    if (isMyTeam || !canManageOuders || loadedTeamId !== currentTeamId || !currentTeamId) return;
+    const json = JSON.stringify(fixtures);
+    if (json === managerFixturesSyncRef.current) return;
+    managerFixturesSyncRef.current = json;
+    setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), { fixtures }, { merge: true }).catch(() => {});
+  }, [isMyTeam, canManageOuders, loadedTeamId, currentTeamId, fixtures]);
 
   // Historie — alleen op te halen als je bij dit team hoort (of admin bent); anders leeg,
   // en er wordt geen leespoging gedaan (voorkomt permission-denied ruis). Zelfde
@@ -411,7 +435,8 @@ export default function App() {
     setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
     try {
       const call = httpsCallable(functions, 'addCoachToTeam');
-      const res = await call({ email, teamId });
+      const role = coachRoleByTeam[teamId] || 'coach';
+      const res = await call({ email, teamId, role });
       if (res.data && res.data.created) {
         await sendPasswordResetEmail(auth, email);
       }
@@ -688,11 +713,17 @@ export default function App() {
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
+  // Wedstrijdschema, Strafcorner, Historie, Afspraken en Teams zijn alleen zinvol voor wie
+  // ingelogd is (de inhoud erachter is toch afgeschermd tot het eigen team / adminrechten) -
+  // een anonieme bezoeker krijgt deze items daarom niet eens in het menu te zien. Ouders is
+  // bewust wél voor iedereen zichtbaar (ook uitgelogd) - dat is juist waar ouders zonder
+  // account kunnen zien wie de pauzehap heeft en wie er rijdt.
+  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'teams'];
   const tabs = [
-    ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
+    ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
-  ].map(t => ({
+  ].filter(t => user || !LOGGED_IN_ONLY_TABS.includes(t[0])).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
       + (tab === t[0]
@@ -1118,6 +1149,66 @@ export default function App() {
     };
   });
 
+  const RIJDER_SLOTS = 4;
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const nlDate = d => d && d.length === 10 ? d.slice(8, 10) + '-' + d.slice(5, 7) + '-' + d.slice(0, 4) : '?';
+  // Hoeveel pauzehappen een speelster dit seizoen al heeft gedaan (los van deze rij) - laat
+  // zien als "(1)"/"(2)" achter haar naam in de keuzelijst, zodat eerlijk verdelen makkelijker
+  // is. Telt alle wedstrijden mee (verleden én toekomst), behalve de rij die je nu bekijkt.
+  const pauzehapCount = (playerId, excludeFixtureId) =>
+    fixtures.filter(x => x.id !== excludeFixtureId && x.pauzehapId === playerId).length;
+  // Zelfde idee, maar dan voor het aantal keer dat iemand al is ingedeeld om te rijden (in
+  // om het even welke van de 4 rijder-plekken), zodat ook dat eerlijk te verdelen is.
+  const rijderCount = (playerId, excludeFixtureId) =>
+    fixtures.filter(x => x.id !== excludeFixtureId && (x.rijders || []).indexOf(playerId) >= 0).length;
+
+  const ouderRowsAll = fixturesSorted.map(f => {
+    const upd = obj => { if (!canManageOuders) return; setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
+    const rijders = f.rijders || [];
+    const isPast = !!f.date && f.date < todayISO;
+    return {
+      key: f.id,
+      isPast,
+      home: !!f.home,
+      // Zelfde wedstrijden als in Programma: begint het (in Programma getoonde) duel met HCRB,
+      // dan is dat een thuiswedstrijd; anders is de tegenstander de plek waar gespeeld wordt -
+      // zonder het leeftijdsteam-nummer erachter (bv "Ring Pass MO18-3" -> "Ring Pass").
+      waar: f.home ? 'Thuis' : (f.opponent ? f.opponent.replace(/\s+[A-Z]{1,4}\d+(-\d+)?$/, '') : 'tegenstander ?'),
+      datum: nlDate(f.date),
+      verzameltijd: f.verzameltijd || '',
+      onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
+      startTijd: f.time || '',
+      pauzehapId: f.pauzehapId || '',
+      onPauzehap: e => upd({ pauzehapId: e.target.value || null }),
+      pauzehapOptions: players.map(p => {
+        const n = pauzehapCount(p.id, f.id);
+        return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
+      }),
+      // Altijd 4 slots (ook bij thuis) zodat elke rij dezelfde kolommen heeft in de tabel -
+      // bij thuis is active false en toont de cel gewoon een streepje, geen keuzelijst.
+      rijderSlots: Array.from({ length: RIJDER_SLOTS }, (_, i) => {
+        const chosenElsewhere = rijders.filter((id, j) => j !== i && id);
+        return {
+          key: i,
+          active: !f.home,
+          value: rijders[i] || '',
+          options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0).map(p => {
+            const n = rijderCount(p.id, f.id);
+            return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
+          }),
+          onChange: e => {
+            const next = rijders.slice(0, RIJDER_SLOTS);
+            while (next.length < RIJDER_SLOTS) next.push(null);
+            next[i] = e.target.value || null;
+            upd({ rijders: next });
+          },
+        };
+      }),
+    };
+  });
+  const ouderRows = showPastOuders ? ouderRowsAll : ouderRowsAll.filter(r => !r.isPast);
+  const pastOuderCount = ouderRowsAll.length - ouderRowsAll.filter(r => !r.isPast).length;
+
   const matchOptions = fixturesSorted.map(f => {
     const d = f.date ? new Date(f.date + 'T12:00:00') : null;
     return {
@@ -1198,7 +1289,7 @@ export default function App() {
 
       {loginOpen && <Login onClose={() => setLoginOpen(false)} />}
 
-      {tab === 'wedstrijd' && (
+      {tab === 'wedstrijd' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-8)')}>
 
           <section data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-4)')}>
@@ -1499,7 +1590,7 @@ export default function App() {
             </section>
           )}
         </main>
-      )}
+      ) : accessGate('Wedstrijdschema'))}
 
       {tab === 'afspraken' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:760px')}>
@@ -1742,7 +1833,73 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'sc' && (
+      {tab === 'ouders' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Ouders</h2>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per wedstrijd wie de pauzehap meeneemt en, bij uitwedstrijden, welke ouders rijden.</p>
+          </div>
+          {pastOuderCount > 0 && (
+            <label style={css('display:flex;align-items:center;gap:6px;font-size:15px;cursor:pointer')}>
+              <input type="checkbox" checked={showPastOuders} onChange={e => setShowPastOuders(e.target.checked)} />
+              <span>Ook {pastOuderCount} gespeelde wedstrijd{pastOuderCount === 1 ? '' : 'en'} tonen</span>
+            </label>
+          )}
+          {ouderRows.length ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table" style={css('white-space:nowrap')}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>📍 Waar</th>
+                    <th style={{ padding: '4px 6px' }}>📅 Datum</th>
+                    <th style={{ padding: '4px 6px' }}>⏰ Verzameltijd</th>
+                    <th style={{ padding: '4px 6px' }}>🏁 Start</th>
+                    <th style={{ padding: '4px 6px' }}>🥪 Pauzehap</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 1</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 2</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 3</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 4</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ouderRows.map(r => (
+                    <tr key={r.key}>
+                      <td style={{ textAlign: 'left', padding: '4px 6px' }}>{r.waar}</td>
+                      <td style={{ padding: '4px 6px' }}>{r.datum}</td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <input className="input" aria-label={`Verzameltijd ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} />
+                      </td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <input className="input" aria-label={`Start ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} readOnly style={css('padding:4px 6px')} value={r.startTijd} />
+                      </td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
+                          <option value="">—</option>
+                          {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                        </select>
+                      </td>
+                      {r.rijderSlots.map(s => (
+                        <td key={s.key} style={{ padding: '4px 6px' }}>
+                          {s.active ? (
+                            <select className="input" aria-label={`Rijder ${s.key + 1} ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
+                              <option value="">—</option>
+                              {s.options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                            </select>
+                          ) : '—'}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="card-body" style={css('margin:0')}>{fixtures.length ? 'Geen aankomende wedstrijden.' : 'Nog geen wedstrijden in het programma.'}</p>
+          )}
+        </main>
+      )}
+
+      {tab === 'sc' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
           <div>
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 var(--space-1);font-weight:600')}>Strafcorner verdedigen</h2>
@@ -1791,7 +1948,7 @@ export default function App() {
             <button type="button" className="btn btn-ghost" disabled={readOnly} style={css('margin-top:var(--space-2)')} onClick={() => addScRole('aanval')}>+ Rol toevoegen</button>
           </div>
         </main>
-      )}
+      ) : accessGate('Strafcorner'))}
 
       {tab === 'historie' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
@@ -1890,9 +2047,9 @@ export default function App() {
           {isAdmin && (
             <div style={css('display:flex;flex-direction:column;gap:var(--space-4)')}>
               <div>
-                <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 4px;font-weight:600')}>Coaches per team</h2>
+                <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 4px;font-weight:600')}>Coaches &amp; managers per team</h2>
                 <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
-                  Een team mag meerdere coaches hebben. Nieuw e-mailadres → wordt een account aangemaakt en krijgt een mail om een wachtwoord in te stellen; bestaand e-mailadres → wordt alleen aan dit team gekoppeld.
+                  Een team mag meerdere coaches en managers hebben. Een coach ziet en bewerkt alles van het team; een manager mag alleen de Ouders-indeling maken en wijzigen. Nieuw e-mailadres → wordt een account aangemaakt en krijgt een mail om een wachtwoord in te stellen; bestaand e-mailadres → wordt alleen aan dit team gekoppeld (met de gekozen rol).
                 </p>
               </div>
               {teams.map(t => {
@@ -1904,7 +2061,7 @@ export default function App() {
                       <div style={css('display:flex;flex-direction:column;gap:6px')}>
                         {coaches.map(c => (
                           <div key={c.uid} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:15px')}>
-                            <span>{c.email}{c.role === 'admin' ? ' · admin' : ''}</span>
+                            <span>{c.email}{c.role && c.role !== 'coach' ? ` · ${c.role}` : ''}</span>
                             <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={() => unlinkCoach(c.uid, t.id)}>Loskoppelen</button>
                           </div>
                         ))}
@@ -1925,8 +2082,15 @@ export default function App() {
                         <input className="input" id={`coach-contact-${t.id}`} name={`coach-contact-${t.id}`} type="text" inputMode="email" autoComplete="off" value={coachEmailByTeam[t.id] || ''}
                           onChange={e => setCoachEmailByTeam(m => ({ ...m, [t.id]: e.target.value }))} />
                       </div>
+                      <div className="field" style={css('margin:0')}>
+                        <label htmlFor={`coach-role-${t.id}`}>Rol</label>
+                        <select className="input" id={`coach-role-${t.id}`} value={coachRoleByTeam[t.id] || 'coach'} onChange={e => setCoachRoleByTeam(m => ({ ...m, [t.id]: e.target.value }))}>
+                          <option value="coach">Coach</option>
+                          <option value="manager">Manager</option>
+                        </select>
+                      </div>
                       <button type="button" className="btn btn-secondary" disabled={coachBusyByTeam[t.id]} onClick={() => addCoach(t.id)}>
-                        {coachBusyByTeam[t.id] ? 'Bezig…' : 'Coach toevoegen'}
+                        {coachBusyByTeam[t.id] ? 'Bezig…' : 'Toevoegen'}
                       </button>
                     </div>
                     {coachErrorByTeam[t.id] && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{coachErrorByTeam[t.id]}</div>}

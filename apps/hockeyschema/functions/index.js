@@ -24,8 +24,10 @@ exports.addCoachToTeam = onCall(async (request) => {
 
   const email = String((request.data || {}).email || '').trim().toLowerCase();
   const teamId = String((request.data || {}).teamId || '').trim();
+  const requestedRole = String((request.data || {}).role || 'coach').trim();
   if (!EMAIL_RE.test(email)) throw new HttpsError('invalid-argument', 'Ongeldig e-mailadres.');
   if (!teamId) throw new HttpsError('invalid-argument', 'Team is verplicht.');
+  if (!['coach', 'manager'].includes(requestedRole)) throw new HttpsError('invalid-argument', 'Ongeldige rol.');
 
   const teamDoc = await admin.firestore().doc(`teams/${teamId}`).get();
   if (!teamDoc.exists) throw new HttpsError('invalid-argument', 'Onbekend team.');
@@ -40,11 +42,12 @@ exports.addCoachToTeam = onCall(async (request) => {
     created = true;
   }
 
-  // Never downgrade an existing admin to coach just because their email got added to a
-  // team here - only the role of a brand-new account is actually decided by this call.
+  // Never downgrade an existing admin to coach/manager just because their email got added
+  // to a team here - an admin's role is untouchable through this call, everyone else's role
+  // is whatever the caller picked (coach or manager), even on an already-linked account.
   const existingSnap = created ? null : await admin.firestore().doc(`users/${userRecord.uid}`).get();
   const existingRole = existingSnap && existingSnap.exists ? existingSnap.data().role : null;
-  const role = existingRole === 'admin' ? 'admin' : 'coach';
+  const role = existingRole === 'admin' ? 'admin' : requestedRole;
 
   await admin.firestore().doc(`users/${userRecord.uid}`).set({ email, teamId, role }, { merge: true });
 
