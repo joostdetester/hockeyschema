@@ -311,6 +311,7 @@ export default function App() {
   const [newTeamName, setNewTeamName] = useState('');
   const [teamError, setTeamError] = useState('');
   const [allUsers, setAllUsers] = useState([]);
+  const [expandedUserUid, setExpandedUserUid] = useState(null);
   const [coachEmailByTeam, setCoachEmailByTeam] = useState({});
   const [coachBusyByTeam, setCoachBusyByTeam] = useState({});
   const [coachErrorByTeam, setCoachErrorByTeam] = useState({});
@@ -706,7 +707,8 @@ export default function App() {
   const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
-    ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams']
+    ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
+    ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
   ].map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
@@ -2011,6 +2013,44 @@ export default function App() {
               {user ? 'Alleen beheerders kunnen nieuwe teams aanmaken.' : 'Log in als beheerder om een nieuw team aan te maken.'}
             </p>
           )}
+        </main>
+      )}
+
+      {tab === 'inlog' && isAdmin && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4);max-width:640px')}>
+          <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Inlogpogingen</h2>
+          <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
+            Per gebruiker de laatste 50 succesvolle logins. Klik op een gebruiker om die open te klappen.
+          </p>
+          <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+            {allUsers.map(u => {
+              const open = expandedUserUid === u.uid;
+              const teamName = u.role === 'admin' ? 'Beheerder' : ((teams.find(t => t.id === u.teamId) || {}).name || '—');
+              const panelId = `logins-${u.uid}`;
+              return (
+                <div key={u.uid} className="card elev-sm" style={css('padding:0;overflow:hidden')}>
+                  <button type="button" aria-expanded={open} aria-controls={panelId}
+                    onClick={() => setExpandedUserUid(open ? null : u.uid)}
+                    style={css('width:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:var(--space-3);background:none;border:none;cursor:pointer;text-align:left;font-family:var(--font-body);font-size:15px;color:var(--color-text)')}>
+                    <span>{u.email || u.uid}</span>
+                    <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{teamName}</span>
+                  </button>
+                  {open && (
+                    <div id={panelId} style={css('padding:0 var(--space-3) var(--space-3);display:flex;flex-direction:column;gap:4px')}>
+                      {(u.logins || []).length ? u.logins.map(ts => (
+                        <div key={ts} style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                          {new Date(ts).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                        </div>
+                      )) : (
+                        <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen logins geregistreerd.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!allUsers.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen gebruikers.</p>}
+          </div>
         </main>
       )}
     </div>
