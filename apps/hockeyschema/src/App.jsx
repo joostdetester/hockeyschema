@@ -1388,7 +1388,7 @@ export default function App() {
                       {h.rows.map(row => (
                         <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
                           {row.cells.map(cell => (
-                            <div key={cell.key} style={css(cell.style)}>
+                            <div key={cell.key} data-poscell="1" style={css(cell.style)}>
                               <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
                               <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
                               <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
