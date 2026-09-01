@@ -933,10 +933,11 @@ export default function App() {
     };
   }
 
-  const posCols = POS.map(p => ({ key: p.k, short: p.short }));
+  const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
   const teamRows = players.map(p => ({
     key: p.id,
     name: p.first + ' ' + p.last,
+    posCount: Object.values(p.prefs).filter(Boolean).length,
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
     subLabel: p.sub ? 'Invaller' : 'Vast',
@@ -1695,7 +1696,7 @@ export default function App() {
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
                   <th>Niveau</th>
-                  {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short}</th>)}
+                  {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
                   <th style={{ fontSize: '12px' }}>KP</th>
                   <th></th>
                 </tr>
@@ -1703,7 +1704,7 @@ export default function App() {
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name} ({r.posCount})</td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     <td style={{ textAlign: 'center' }}>
                       <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
