@@ -129,6 +129,11 @@ const C_MOVE = 'var(--color-accent-700)';
 const C_IN_BG = '#e7f1ea';
 const C_MOVE_BG = 'var(--color-accent-100)';
 
+// Invallers kunnen dezelfde voornaam hebben als een vaste speelster - overal waar alleen de
+// voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
+// blijven.
+function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
+
 function ratingOf(p) { return 50 + ((p && p.level ? p.level : 3) - 1) * 12.5; }
 // mode 'sterk': sterkste speelsters krijgen iets meer speeltijd.
 // mode 'zwak': gespiegeld — minder sterke speelsters krijgen iets meer speeltijd (zelfde bandbreedte).
@@ -517,7 +522,7 @@ export default function App() {
 
   const patchMatch = obj => { if (readOnly) return; setMatch(m => ({ ...m, ...obj })); };
   const byId = id => players.find(p => p.id === id);
-  const nameOf = id => { const p = byId(id); return p ? p.first : '—'; };
+  const nameOf = id => { const p = byId(id); return p ? displayFirst(p) : '—'; };
   const selectedPlayers = () => {
     const sel = match.selected || [];
     return players.filter(p => sel.indexOf(p.id) >= 0);
@@ -666,7 +671,7 @@ export default function App() {
     const isK = m.keeperId === p.id;
     return {
       key: p.id,
-      label: isK ? p.first + ' · keep' : p.first,
+      label: isK ? displayFirst(p) + ' · keep' : displayFirst(p),
       toggle: () => {
         const next = on ? sel.filter(x => x !== p.id) : sel.concat([p.id]);
         patchMatch({ selected: next, keeperId: on && isK ? '' : m.keeperId });
@@ -686,9 +691,9 @@ export default function App() {
   const keeperIdsOf = h => (h.keeperIds && h.keeperIds.length ? h.keeperIds : [h.keeperId]).filter(Boolean);
   const keeps = {};
   history.forEach(h => keeperIdsOf(h).forEach(id => { keeps[id] = (keeps[id] || 0) + 1; }));
-  const never = players.filter(p => !keeps[p.id]).map(p => p.first);
+  const never = players.filter(p => !keeps[p.id]).map(p => displayFirst(p));
   const keeperHint = history.length
-    ? 'Keeprotatie tot nu toe: ' + players.filter(p => keeps[p.id]).map(p => p.first + ' (' + keeps[p.id] + '×)').join(', ')
+    ? 'Keeprotatie tot nu toe: ' + players.filter(p => keeps[p.id]).map(p => displayFirst(p) + ' (' + keeps[p.id] + '×)').join(', ')
       + (never.length ? ' — nog nooit gekeept: ' + never.join(', ') + '.' : '')
     : 'Nog geen wedstrijden opgeslagen, dus nog geen keeprotatie bekend.';
 
@@ -821,14 +826,14 @@ export default function App() {
     const cell = (v, q) => (keepsQ[q] ? 'K' : (v ? String(v) : '·'));
     return {
       key: p.id,
-      name: p.first + (kHalves === 8 ? ' (keep)' : kHalves ? ' (keep ½)' : ''),
+      name: displayFirst(p) + (kHalves === 8 ? ' (keep)' : kHalves ? ' (keep ½)' : ''),
       q1: cell(arr[0], 0), q2: cell(arr[1], 1), q3: cell(arr[2], 2), q4: cell(arr[3], 3),
       halves: String(tot), minutes: String(Math.round(tot * hm)),
       _minutesNum: tot * hm
     };
   }).sort((a, b) => b._minutesNum - a._minutesNum);
 
-  const injOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.injuries || {})[p.id] == null).map(p => ({ id: p.id, label: p.first }));
+  const injOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.injuries || {})[p.id] == null).map(p => ({ id: p.id, label: displayFirst(p) }));
   const injFromOptions = [1, 2, 3, 4].map(q => ({ value: String(q), label: 'vanaf ' + q + 'e kwart' }));
   const injuryList = Object.keys(m.injuries || {}).map(id => ({
     key: id,
@@ -869,7 +874,7 @@ export default function App() {
             : 'komt van de bank';
         }
         return {
-          key: ci, name: p ? p.first : '?',
+          key: ci, name: displayFirst(p),
           meta: (c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank') + ' · ' + fitOf(p, ed.pos),
           effect,
           style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
@@ -898,13 +903,13 @@ export default function App() {
     const hurt = s => s.occ.prefs[s.pos] ? s.occ.prefs[s.pos] : 9;
     slots.sort((a, b2) => myRank(a) - myRank(b2) || hurt(b2) - hurt(a));
     relocator = {
-      title: (p ? p.first : '') + ' speelt nu niet in kwart ' + (rel.q + 1),
+      title: (p ? displayFirst(p) : '') + ' speelt nu niet in kwart ' + (rel.q + 1),
       intro: 'Kies waar zij alsnog speelt. De speelster die daar staat gaat op de bank in die helft.',
       options: slots.slice(0, 8).map((s, si) => ({
         key: si,
         name: PMAP[s.pos].label + ' · ' + (s.h === 0 ? '1e helft' : '2e helft'),
         meta: fitOf(p, s.pos),
-        effect: s.occ.first + ' gaat daar weg',
+        effect: displayFirst(s.occ) + ' gaat daar weg',
         style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
         apply: () => applySwap(s.b, s.pos, rel.id)
       })),
@@ -1022,7 +1027,7 @@ export default function App() {
 
   const rotationOrder = players.slice().sort((a, b) => (keeps[a.id] || 0) - (keeps[b.id] || 0));
   const keeperRotationText = history.length
-    ? 'Aan de beurt om te keepen: ' + rotationOrder.slice(0, 4).map(p => p.first).join(', ') + '.'
+    ? 'Aan de beurt om te keepen: ' + rotationOrder.slice(0, 4).map(p => displayFirst(p)).join(', ') + '.'
     : 'Zodra je wedstrijden opslaat, zie je hier wie het langst niet gekeept heeft.';
 
   // Eén poule (competitie) per gevonden poule_id, gesorteerd op id (loopt in de praktijk
@@ -1715,7 +1720,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
+                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
@@ -1738,7 +1743,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
+                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
