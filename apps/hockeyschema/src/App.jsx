@@ -1166,11 +1166,14 @@ export default function App() {
       key: f.id,
       isPast,
       home: !!f.home,
-      waar: f.home ? 'Thuis' : (f.opponent || 'tegenstander ?'),
+      // Zelfde wedstrijden als in Programma: begint het (in Programma getoonde) duel met HCRB,
+      // dan is dat een thuiswedstrijd; anders is de tegenstander de plek waar gespeeld wordt -
+      // zonder het leeftijdsteam-nummer erachter (bv "Ring Pass MO18-3" -> "Ring Pass").
+      waar: f.home ? 'Thuis' : (f.opponent ? f.opponent.replace(/\s+[A-Z]{1,4}\d+(-\d+)?$/, '') : 'tegenstander ?'),
       datum: nlDate(f.date),
       verzameltijd: f.verzameltijd || '',
       onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
-      startTijd: f.time || '—',
+      startTijd: f.time || '',
       pauzehapId: f.pauzehapId || '',
       onPauzehap: e => upd({ pauzehapId: e.target.value || null }),
       pauzehapOptions: players.map(p => {
@@ -1859,7 +1862,9 @@ export default function App() {
                       <td style={{ padding: '4px 6px' }}>
                         <input className="input" aria-label={`Verzameltijd ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} />
                       </td>
-                      <td style={{ padding: '4px 6px' }}>{r.startTijd}</td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <input className="input" aria-label={`Start ${r.waar} ${r.datum}`} type="time" disabled style={css('padding:4px 6px')} value={r.startTijd} readOnly />
+                      </td>
                       <td style={{ padding: '4px 6px' }}>
                         <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
                           <option value="">—</option>
