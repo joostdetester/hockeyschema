@@ -1133,7 +1133,13 @@ export default function App() {
   );
 
   return (
-    <div data-sheet="1" style={css('min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
+    <div data-sheet="1" style={css('position:relative;z-index:0;min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
+
+      {/* Watermerk: negatieve z-index plaatst 'm ná de achtergrond van dit (position:relative)
+          element maar vóór alle gewone (niet-gepositioneerde) inhoud erna - anders zou een
+          position:absolute element juist BOVEN de gewone inhoud tekenen, ondanks dat het als
+          eerste in de DOM staat. */}
+      <img src="/hcrb.png" alt="" aria-hidden="true" style={css('position:absolute;top:50%;left:50%;translate:-50% -50%;width:min(50vw,480px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
 
       <header style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
         <div style={css('height:5px;background:var(--color-text)')}></div>
