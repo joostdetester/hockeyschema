@@ -688,11 +688,15 @@ export default function App() {
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
+  // Wedstrijdschema, Strafcorner, Historie en Teams zijn alleen zinvol voor wie ingelogd is
+  // (de inhoud erachter is toch afgeschermd tot het eigen team / adminrechten) - een anonieme
+  // bezoeker krijgt deze items daarom niet eens in het menu te zien.
+  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'teams'];
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
-  ].map(t => ({
+  ].filter(t => user || !LOGGED_IN_ONLY_TABS.includes(t[0])).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
       + (tab === t[0]
@@ -1198,7 +1202,7 @@ export default function App() {
 
       {loginOpen && <Login onClose={() => setLoginOpen(false)} />}
 
-      {tab === 'wedstrijd' && (
+      {tab === 'wedstrijd' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-8)')}>
 
           <section data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-4)')}>
@@ -1499,7 +1503,7 @@ export default function App() {
             </section>
           )}
         </main>
-      )}
+      ) : accessGate('Wedstrijdschema'))}
 
       {tab === 'afspraken' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:760px')}>
@@ -1742,7 +1746,7 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'sc' && (
+      {tab === 'sc' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
           <div>
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 var(--space-1);font-weight:600')}>Strafcorner verdedigen</h2>
@@ -1791,7 +1795,7 @@ export default function App() {
             <button type="button" className="btn btn-ghost" disabled={readOnly} style={css('margin-top:var(--space-2)')} onClick={() => addScRole('aanval')}>+ Rol toevoegen</button>
           </div>
         </main>
-      )}
+      ) : accessGate('Strafcorner'))}
 
       {tab === 'historie' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
