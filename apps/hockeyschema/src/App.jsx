@@ -703,6 +703,9 @@ export default function App() {
   // ---- derived values (mirrors the original renderVals) ----
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
+  // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
+  // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
+  const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams']
@@ -1707,7 +1710,7 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'team' && (isMyTeam ? (
+      {tab === 'team' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
           <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt.</p>
@@ -1717,7 +1720,10 @@ export default function App() {
                 <tr>
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
-                  <th>Niveau</th>
+                  {/* Niveau is de enige kolom die niet voor iedereen zichtbaar is - alleen coaches
+                      (of admin) van dít team zien 'm; coaches van een ander team en bezoekers die
+                      niet zijn ingelogd zien de rest van de teampagina wel, maar deze kolom niet. */}
+                  {isMyTeam && <th>Niveau</th>}
                   {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
                   <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
                   <th></th>
@@ -1727,17 +1733,19 @@ export default function App() {
                 {teamRows.map(r => (
                   <tr key={r.key}>
                     <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name} ({r.posCount})</td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="tag" style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
-                    <td style={{ textAlign: 'center' }}>
-                      <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
-                        {LEVELS.map(lv => <option key={lv.v} value={lv.v}>{lv.label}</option>)}
-                      </select>
-                    </td>
+                    <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
+                    {isMyTeam && (
+                      <td style={{ textAlign: 'center' }}>
+                        <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
+                          {LEVELS.map(lv => <option key={lv.v} value={lv.v}>{lv.label}</option>)}
+                        </select>
+                      </td>
+                    )}
                     {r.cells.map(c => (
-                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
+                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" disabled={readOnly} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
                     ))}
                     <td style={{ textAlign: 'center' }}><input type="checkbox" checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
+                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1755,7 +1763,7 @@ export default function App() {
             <button type="button" className="btn btn-primary" disabled={readOnly} onClick={addPlayer}>Toevoegen</button>
           </div>
         </main>
-      ) : accessGate('Team'))}
+      )}
 
       {tab === 'sc' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
@@ -1862,7 +1870,7 @@ export default function App() {
             <table className="table">
               <thead><tr><th style={{ textAlign: 'left' }}>Naam</th><th style={{ textAlign: 'left' }}>Team-id</th><th style={{ textAlign: 'center' }}>Standaard</th>{isAdmin && <th></th>}</tr></thead>
               <tbody>
-                {teams.map(t => (
+                {visibleTeams.map(t => (
                   <tr key={t.id}>
                     <td style={{ textAlign: 'left' }}>{t.name}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', fontFamily: 'monospace' }}>{t.id}</td>
@@ -1891,7 +1899,11 @@ export default function App() {
                     )}
                   </tr>
                 ))}
-                {!teams.length && <tr><td colSpan={isAdmin ? 4 : 3} style={{ color: 'var(--color-neutral-700)' }}>Nog geen teams.</td></tr>}
+                {!visibleTeams.length && (
+                  <tr><td colSpan={isAdmin ? 4 : 3} style={{ color: 'var(--color-neutral-700)' }}>
+                    {!teams.length ? 'Nog geen teams.' : !user ? 'Log in om je team te zien.' : 'Je bent aan geen enkel team gekoppeld.'}
+                  </td></tr>
+                )}
               </tbody>
             </table>
           </div>
