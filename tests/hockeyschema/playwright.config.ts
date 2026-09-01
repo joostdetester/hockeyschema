@@ -9,6 +9,10 @@ dotenv.config();
 const testDir = defineBddConfig({
   features: 'features/**/*.feature',
   steps: ['steps/**/*.ts'],
+  // Lets a scenario be drafted in a .feature file for review before its steps/page
+  // objects exist, without blocking generation (the default, 'fail-on-gen') for the
+  // rest of the suite - bddgen just skips scenarios with undefined steps instead.
+  missingSteps: 'skip-scenario',
 });
 
 const isDebug = !!process.env.PWDEBUG;

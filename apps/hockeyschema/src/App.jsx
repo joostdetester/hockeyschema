@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
-import { db } from './firebase.js';
+import { doc, onSnapshot, setDoc, getDoc, collection } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { sendPasswordResetEmail } from 'firebase/auth';
+import { db, functions, auth } from './firebase.js';
 import { useAuth } from './AuthContext.jsx';
 import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
+import { DEFAULT_SC } from './scDefaults.js';
 
 function css(str) {
   const obj = {};
@@ -34,7 +37,7 @@ const POS = [
 const PMAP = {};
 POS.forEach(p => { PMAP[p.k] = p; });
 const FILL_ORDER = ['SP', 'MM', 'VS', 'LM', 'RV', 'RH', 'RA', 'LV', 'LH', 'LA'];
-const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['VS'], ['LA', 'LM', 'RA']];
+const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['LA', 'VS', 'RA'], ['LM']];
 const ZONE_W = { as: 1.0, rechts: 0.6, links: 0.3 };
 const QUARTER_MIN = 17.5;
 
@@ -55,24 +58,6 @@ const DEFAULT_PLAYERS = [
   ['Sanne', 'van Dongen', { LV: 1, SP: 2, RV: 3 }],
   ['Sara', 'van Groningen', { LV: 3, SP: 2, RV: 1 }]
 ].map((r, i) => ({ id: 'p' + i, first: r[0], last: r[1], level: 3, sub: false, prefs: r[2] }));
-
-// Elke rol heeft een stabiel id (voor React-keys en add/verwijder) en 3 keuzeplekken
-// die een speelster-id bevatten (of null) — gekoppeld aan de echte teamlijst i.p.v. losse tekst.
-const DEFAULT_SC = {
-  verdedigen: [
-    { id: 'v1', role: '1e uitloop', picks: [null, null, null] },
-    { id: 'v2', role: '2e uitloop', picks: [null, null, null] },
-    { id: 'v3', role: 'Lijnstop links', picks: [null, null, null] },
-    { id: 'v4', role: 'Lijnstop rechts', picks: [null, null, null] }
-  ],
-  aanval: [
-    { id: 'a1', role: 'Aangever', picks: [null, null, null] },
-    { id: 'a2', role: 'Stopper', picks: [null, null, null] },
-    { id: 'a3', role: 'Afmaker', picks: [null, null, null] },
-    { id: 'a4', role: 'Tweede stopper', picks: [null, null, null] },
-    { id: 'a5', role: 'Lokaas aanvaller', picks: [null, null, null] }
-  ]
-};
 
 const DEFAULT_FIXTURES = [
   ['2026-08-29', '14:00', 'MO18-1 HCRB', false],
@@ -128,6 +113,11 @@ const C_IN = '#1c6b3d';
 const C_MOVE = 'var(--color-accent-700)';
 const C_IN_BG = '#e7f1ea';
 const C_MOVE_BG = 'var(--color-accent-100)';
+
+// Invallers kunnen dezelfde voornaam hebben als een vaste speelster - overal waar alleen de
+// voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
+// blijven.
+function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
 
 function ratingOf(p) { return 50 + ((p && p.level ? p.level : 3) - 1) * 12.5; }
 // mode 'sterk': sterkste speelsters krijgen iets meer speeltijd.
@@ -279,7 +269,7 @@ const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuri
 
 export default function App() {
   const { user, myTeamId, isAdmin, logout } = useAuth();
-  const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam } = useTeam();
+  const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam, defaultTeamId, setDefaultTeam } = useTeam();
 
   const [tab, setTab] = useState('programma');
   const [players, setPlayers] = useState([]);
@@ -293,7 +283,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, friendly: false });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
-  const [printOptions, setPrintOptions] = useState({ wissels: false, strafcorner: false, speeltijd: false });
+  const [printOptions, setPrintOptions] = useState({ strafcorner: false, speeltijd: false });
   const [history, setHistory] = useState([]);
   const [match, setMatch] = useState(BLANK_MATCH);
   const [editing, setEditing] = useState(null);
@@ -303,6 +293,11 @@ export default function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [teamError, setTeamError] = useState('');
+  const [allUsers, setAllUsers] = useState([]);
+  const [expandedUserUid, setExpandedUserUid] = useState(null);
+  const [coachEmailByTeam, setCoachEmailByTeam] = useState({});
+  const [coachBusyByTeam, setCoachBusyByTeam] = useState({});
+  const [coachErrorByTeam, setCoachErrorByTeam] = useState({});
   const [lisaConfig, setLisaConfig] = useState(null);
   const [lisaForm, setLisaForm] = useState({ clubDudaId: '', teamId: '', teamName: '', authHeader: '' });
   const [lisaBusy, setLisaBusy] = useState(false);
@@ -395,6 +390,50 @@ export default function App() {
     });
   }, [currentTeamId, canSeeHistory]);
 
+  // Alle gebruikers, om per team te tonen wie er als coach aan gekoppeld is - alleen
+  // beheerders mogen andermans users/{uid} lezen (zie firestore.rules).
+  useEffect(() => {
+    if (!isAdmin) { setAllUsers([]); return; }
+    return onSnapshot(collection(db, 'users'), snap => {
+      setAllUsers(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
+    });
+  }, [isAdmin]);
+
+  // Maakt (indien nodig) het account aan via een Cloud Function - dat vereist Admin-
+  // rechten, want de client-SDK kan alleen de eigen ingelogde gebruiker aanmaken/wijzigen,
+  // niet een account voor een ander e-mailadres zonder de beheerder zelf uit te loggen.
+  // Bij een nieuw account sturen we daarna zelf de wachtwoord-instel-mail - dat is een
+  // gewone publieke Firebase Auth-aanroep, geen extra infrastructuur nodig.
+  async function addCoach(teamId) {
+    const email = (coachEmailByTeam[teamId] || '').trim();
+    if (!email) { setCoachErrorByTeam(m => ({ ...m, [teamId]: 'Vul een e-mailadres in.' })); return; }
+    setCoachBusyByTeam(m => ({ ...m, [teamId]: true }));
+    setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
+    try {
+      const call = httpsCallable(functions, 'addCoachToTeam');
+      const res = await call({ email, teamId });
+      if (res.data && res.data.created) {
+        await sendPasswordResetEmail(auth, email);
+      }
+      setCoachEmailByTeam(m => ({ ...m, [teamId]: '' }));
+    } catch (e) {
+      setCoachErrorByTeam(m => ({ ...m, [teamId]: e.message || 'Toevoegen mislukt.' }));
+    } finally {
+      setCoachBusyByTeam(m => ({ ...m, [teamId]: false }));
+    }
+  }
+
+  // Loskoppelen is een gewone Firestore-write (geen nieuw account, geen Auth-actie nodig),
+  // dus dat kan direct vanuit de client - beheerders mogen users/{uid} schrijven.
+  async function unlinkCoach(uid, teamId) {
+    setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
+    try {
+      await setDoc(doc(db, 'users', uid), { teamId: null }, { merge: true });
+    } catch (e) {
+      setCoachErrorByTeam(m => ({ ...m, [teamId]: e.message || 'Loskoppelen mislukt.' }));
+    }
+  }
+
   async function fetchLisaTeams() {
     const clubDudaId = lisaForm.clubDudaId.trim();
     const authHeader = lisaForm.authHeader.trim();
@@ -468,21 +507,19 @@ export default function App() {
   // Standen komen van dezelfde LISA-koppeling als de wedstrijd-import, maar worden
   // gecached in het publieke teamdocument (hierboven) zodat ook uitgelogde bezoekers
   // ze kunnen zien zonder de auth-sleutel van de clubsite bloot te geven.
+  // Iedereen mag verversen - de Cloud Function doet de LISA-aanroep server-side (de
+  // auth-sleutel in teams/{teamId}/config/lisa is alleen leesbaar voor teamleden) en
+  // schrijft alleen de standen terug; het resultaat komt via de bestaande onSnapshot op
+  // state/public vanzelf binnen, dus hier hoeft niets lokaal te worden bijgewerkt.
   async function refreshStandings() {
-    if (readOnly || !lisaConfig) return;
+    if (!currentTeamId) return;
     setStandingsBusy(true);
     setStandingsError('');
     try {
-      const url = `https://api.lisahockey.nl/v1/duda/${lisaConfig.clubDudaId}/teams/${lisaConfig.teamId}/poules`;
-      const res = await fetch(url, { headers: { authorization: lisaConfig.authHeader, accept: '*/*' } });
-      if (!res.ok) throw new Error('http ' + res.status);
-      const data = await res.json();
-      const rows = data.teams || [];
-      if (!rows.length) { setStandingsError('Geen stand gevonden.'); return; }
-      setStandings(rows);
-      setStandingsUpdatedAt(new Date().toISOString());
+      const call = httpsCallable(functions, 'refreshTeamStandings');
+      await call({ teamId: currentTeamId });
     } catch (e) {
-      setStandingsError('Stand ophalen mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
+      setStandingsError(e.message || 'Stand ophalen mislukt.');
     } finally {
       setStandingsBusy(false);
     }
@@ -517,7 +554,7 @@ export default function App() {
 
   const patchMatch = obj => { if (readOnly) return; setMatch(m => ({ ...m, ...obj })); };
   const byId = id => players.find(p => p.id === id);
-  const nameOf = id => { const p = byId(id); return p ? p.first : '—'; };
+  const nameOf = id => { const p = byId(id); return p ? displayFirst(p) : '—'; };
   const selectedPlayers = () => {
     const sel = match.selected || [];
     return players.filter(p => sel.indexOf(p.id) >= 0);
@@ -648,9 +685,13 @@ export default function App() {
   // ---- derived values (mirrors the original renderVals) ----
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
+  // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
+  // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
+  const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['sc', 'Strafcorner'],
-    ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams']
+    ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
+    ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
   ].map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
@@ -666,7 +707,7 @@ export default function App() {
     const isK = m.keeperId === p.id;
     return {
       key: p.id,
-      label: isK ? p.first + ' · keep' : p.first,
+      label: isK ? displayFirst(p) + ' · keep' : displayFirst(p),
       toggle: () => {
         const next = on ? sel.filter(x => x !== p.id) : sel.concat([p.id]);
         patchMatch({ selected: next, keeperId: on && isK ? '' : m.keeperId });
@@ -686,9 +727,9 @@ export default function App() {
   const keeperIdsOf = h => (h.keeperIds && h.keeperIds.length ? h.keeperIds : [h.keeperId]).filter(Boolean);
   const keeps = {};
   history.forEach(h => keeperIdsOf(h).forEach(id => { keeps[id] = (keeps[id] || 0) + 1; }));
-  const never = players.filter(p => !keeps[p.id]).map(p => p.first);
+  const never = players.filter(p => !keeps[p.id]).map(p => displayFirst(p));
   const keeperHint = history.length
-    ? 'Keeprotatie tot nu toe: ' + players.filter(p => keeps[p.id]).map(p => p.first + ' (' + keeps[p.id] + '×)').join(', ')
+    ? 'Keeprotatie tot nu toe: ' + players.filter(p => keeps[p.id]).map(p => displayFirst(p) + ' (' + keeps[p.id] + '×)').join(', ')
       + (never.length ? ' — nog nooit gekeept: ' + never.join(', ') + '.' : '')
     : 'Nog geen wedstrijden opgeslagen, dus nog geen keeprotatie bekend.';
 
@@ -717,27 +758,6 @@ export default function App() {
       return px - py;
     });
   };
-
-  const switchLog = [];
-  if (sched) {
-    for (let i = 1; i < sched.length; i++) {
-      const prevIds = ids(sched[i - 1]), curIds = ids(sched[i]);
-      const out = prevIds.filter(x => curIds.indexOf(x) < 0);
-      const inn = curIds.filter(x => prevIds.indexOf(x) < 0);
-      if (!out.length && !inn.length) continue;
-      const q = Math.floor(i / 2);
-      const atStart = i % 2 === 0;
-      const t = atStart ? q * QUARTER_MIN : q * QUARTER_MIN + QUARTER_MIN / 2;
-      const hh = Math.floor(t), mm = Math.round((t % 1) * 60);
-      switchLog.push({
-        key: i,
-        time: hh + ':' + String(mm).padStart(2, '0'),
-        moment: atStart ? 'start ' + (q + 1) + 'e kwart' : 'halverwege ' + (q + 1) + 'e kwart',
-        out: out.length ? nm(out) : '—',
-        inn: inn.length ? nm(inn) : '—'
-      });
-    }
-  }
 
   const halves = [0, 1, 2, 3].filter(q => sched && sched[2 * q + 1]).map(q => {
     const a = sched[2 * q], b = sched[2 * q + 1];
@@ -842,14 +862,14 @@ export default function App() {
     const cell = (v, q) => (keepsQ[q] ? 'K' : (v ? String(v) : '·'));
     return {
       key: p.id,
-      name: p.first + (kHalves === 8 ? ' (keep)' : kHalves ? ' (keep ½)' : ''),
+      name: displayFirst(p) + (kHalves === 8 ? ' (keep)' : kHalves ? ' (keep ½)' : ''),
       q1: cell(arr[0], 0), q2: cell(arr[1], 1), q3: cell(arr[2], 2), q4: cell(arr[3], 3),
       halves: String(tot), minutes: String(Math.round(tot * hm)),
       _minutesNum: tot * hm
     };
   }).sort((a, b) => b._minutesNum - a._minutesNum);
 
-  const injOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.injuries || {})[p.id] == null).map(p => ({ id: p.id, label: p.first }));
+  const injOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.injuries || {})[p.id] == null).map(p => ({ id: p.id, label: displayFirst(p) }));
   const injFromOptions = [1, 2, 3, 4].map(q => ({ value: String(q), label: 'vanaf ' + q + 'e kwart' }));
   const injuryList = Object.keys(m.injuries || {}).map(id => ({
     key: id,
@@ -890,7 +910,7 @@ export default function App() {
             : 'komt van de bank';
         }
         return {
-          key: ci, name: p ? p.first : '?',
+          key: ci, name: displayFirst(p),
           meta: (c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank') + ' · ' + fitOf(p, ed.pos),
           effect,
           style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
@@ -919,13 +939,13 @@ export default function App() {
     const hurt = s => s.occ.prefs[s.pos] ? s.occ.prefs[s.pos] : 9;
     slots.sort((a, b2) => myRank(a) - myRank(b2) || hurt(b2) - hurt(a));
     relocator = {
-      title: (p ? p.first : '') + ' speelt nu niet in kwart ' + (rel.q + 1),
+      title: (p ? displayFirst(p) : '') + ' speelt nu niet in kwart ' + (rel.q + 1),
       intro: 'Kies waar zij alsnog speelt. De speelster die daar staat gaat op de bank in die helft.',
       options: slots.slice(0, 8).map((s, si) => ({
         key: si,
         name: PMAP[s.pos].label + ' · ' + (s.h === 0 ? '1e helft' : '2e helft'),
         meta: fitOf(p, s.pos),
-        effect: s.occ.first + ' gaat daar weg',
+        effect: displayFirst(s.occ) + ' gaat daar weg',
         style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
         apply: () => applySwap(s.b, s.pos, rel.id)
       })),
@@ -933,10 +953,12 @@ export default function App() {
     };
   }
 
-  const posCols = POS.map(p => ({ key: p.k, short: p.short }));
+  const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
+  const kpCount = players.filter(pl => pl.fixedKeeper).length;
   const teamRows = players.map(p => ({
     key: p.id,
     name: p.first + ' ' + p.last,
+    posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
     subLabel: p.sub ? 'Invaller' : 'Vast',
@@ -988,8 +1010,8 @@ export default function App() {
   };
   const scSummary = group => (sc[group] || []).map(r => {
     const selIds = m.selected || [];
-    const availId = (r.picks || []).find(pid => pid && selIds.indexOf(pid) >= 0);
-    return { key: r.id, role: r.role, names: availId ? nameOf(availId) : '—' };
+    const availIds = (r.picks || []).filter(pid => pid && selIds.indexOf(pid) >= 0);
+    return { key: r.id, role: r.role, names: availIds.length ? availIds.map(id => nameOf(id)).join(', ') : '—' };
   });
 
   const totals = {};
@@ -1042,7 +1064,7 @@ export default function App() {
 
   const rotationOrder = players.slice().sort((a, b) => (keeps[a.id] || 0) - (keeps[b.id] || 0));
   const keeperRotationText = history.length
-    ? 'Aan de beurt om te keepen: ' + rotationOrder.slice(0, 4).map(p => p.first).join(', ') + '.'
+    ? 'Aan de beurt om te keepen: ' + rotationOrder.slice(0, 4).map(p => displayFirst(p)).join(', ') + '.'
     : 'Zodra je wedstrijden opslaat, zie je hier wie het langst niet gekeept heeft.';
 
   // Eén poule (competitie) per gevonden poule_id, gesorteerd op id (loopt in de praktijk
@@ -1132,7 +1154,13 @@ export default function App() {
   );
 
   return (
-    <div data-sheet="1" style={css('min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
+    <div data-sheet="1" style={css('position:relative;z-index:0;min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
+
+      {/* Watermerk: negatieve z-index plaatst 'm ná de achtergrond van dit (position:relative)
+          element maar vóór alle gewone (niet-gepositioneerde) inhoud erna - anders zou een
+          position:absolute element juist BOVEN de gewone inhoud tekenen, ondanks dat het als
+          eerste in de DOM staat. */}
+      <img src="/hcrb.png" alt="" aria-hidden="true" style={css('position:absolute;top:50%;left:50%;translate:-50% -50%;width:min(50vw,480px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
 
       <header style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
         <div style={css('height:5px;background:var(--color-text)')}></div>
@@ -1189,7 +1217,7 @@ export default function App() {
           </section>
 
           {matchLocked && (
-            <div className="card elev-md" style={css('padding:var(--space-3) var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
+            <div className="card elev-md" data-noprint="1" style={css('padding:var(--space-3) var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
               <span style={css('font-size:16px')}>Dit schema is opgeslagen en staat op alleen-lezen.</span>
               <button type="button" className="btn btn-secondary" disabled={readOnly} onClick={reopenMatch}>Bewerken heropenen</button>
             </div>
@@ -1242,13 +1270,15 @@ export default function App() {
               )}
             </div>
             <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-              <input type="checkbox" checked={!!m.keeperSwitches} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keeperSwitches: e.target.checked, keeper2Id: e.target.checked ? m.keeper2Id : '', schedule: null })} />
+              <input type="checkbox" checked={!!m.keeperSwitches} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keeperSwitches: e.target.checked, keeper2Id: e.target.checked ? m.keeper2Id : '', keepersPlayOut: e.target.checked ? m.keepersPlayOut : false, schedule: null })} />
               <span>Keeper wisselt na 2 kwarten (na de rust)</span>
             </label>
-            <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-              <input type="checkbox" checked={!!m.keepersPlayOut} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keepersPlayOut: e.target.checked, schedule: null })} />
-              <span>Keepers spelen in de helft dat ze niet keepen mee in het veld</span>
-            </label>
+            {m.keeperSwitches && (
+              <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
+                <input type="checkbox" checked={!!m.keepersPlayOut} disabled={matchLocked || readOnly} onChange={e => patchMatch({ keepersPlayOut: e.target.checked, schedule: null })} />
+                <span>Keepers spelen in de helft dat ze niet keepen mee in het veld</span>
+              </label>
+            )}
             <div className="card elev-sm" style={css('padding:var(--space-3) var(--space-4)')}>
               <p style={css('margin:0;font-size:16px;max-width:65ch;text-wrap:pretty')}>{keeperHint}</p>
             </div>
@@ -1298,10 +1328,6 @@ export default function App() {
                     <div className="dialog-title">Wat wil je meeprinten?</div>
                     <p className="dialog-body" style={css('margin:0')}>Het schema zelf wordt altijd geprint. Kies welke onderdelen daarnaast mee moeten.</p>
                     <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
-                      <input type="checkbox" checked={printOptions.wissels} onChange={e => setPrintOptions(o => ({ ...o, wissels: e.target.checked }))} />
-                      <span>Wisselmomenten</span>
-                    </label>
-                    <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
                       <input type="checkbox" checked={printOptions.strafcorner} onChange={e => setPrintOptions(o => ({ ...o, strafcorner: e.target.checked }))} />
                       <span>Strafcorner</span>
                     </label>
@@ -1318,7 +1344,7 @@ export default function App() {
               )}
 
               <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
-                <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Blessure — schema opnieuw indelen</div>
+                <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Uitvallers — schema opnieuw indelen</div>
                 <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
                   <select className="input" aria-label="Speelster" style={css('max-width:220px')} value={injPlayer} onChange={e => setInjPlayer(e.target.value)}>
                     <option value="">— speelster —</option>
@@ -1399,7 +1425,7 @@ export default function App() {
                       {h.rows.map(row => (
                         <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
                           {row.cells.map(cell => (
-                            <div key={cell.key} style={css(cell.style)}>
+                            <div key={cell.key} data-poscell="1" style={css(cell.style)}>
                               <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
                               <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
                               <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
@@ -1418,23 +1444,6 @@ export default function App() {
                     </div>
                   </article>
                 ))}
-              </div>
-
-              <div data-noprint={printOptions.wissels ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-                <h3 style={css('font-family:var(--font-heading);font-size:22px;margin:0;font-weight:600')}>Wisselmomenten — in één oogopslag</h3>
-                <table className="table">
-                  <thead><tr><th style={{ textAlign: 'left' }}>Tijd</th><th style={{ textAlign: 'left' }}>Moment</th><th style={{ textAlign: 'left' }}>Eruit</th><th style={{ textAlign: 'left' }}>Erin</th></tr></thead>
-                  <tbody>
-                    {switchLog.map(sw => (
-                      <tr key={sw.key}>
-                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{sw.time}</td>
-                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{sw.moment}</td>
-                        <td style={{ textAlign: 'left', color: '#a32020' }}>{sw.out}</td>
-                        <td style={{ textAlign: 'left', color: '#1c6b3d' }}>{sw.inn}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
 
               <div data-noprint={printOptions.strafcorner ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
@@ -1617,25 +1626,17 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Standen</h2>
 
-          {isMyTeam && (
-            <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-              {lisaConfig ? (
-                <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
-                  <button type="button" className="btn btn-secondary" disabled={standingsBusy} onClick={refreshStandings}>{standingsBusy ? 'Bezig…' : 'Ververs stand'}</button>
-                  {standingsUpdatedAt && (
-                    <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
-                      Bijgewerkt op {new Date(standingsUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
-                  Koppel eerst de clubwebsite (bij Teams) om de stand te kunnen ophalen.
-                </p>
+          <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
+              <button type="button" className="btn btn-secondary" disabled={standingsBusy} onClick={refreshStandings}>{standingsBusy ? 'Bezig…' : 'Ververs stand'}</button>
+              {standingsUpdatedAt && (
+                <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                  Bijgewerkt op {new Date(standingsUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                </span>
               )}
-              {standingsError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{standingsError}</div>}
             </div>
-          )}
+            {standingsError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{standingsError}</div>}
+          </div>
 
           {!standings.length ? (
             <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
@@ -1684,7 +1685,7 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'team' && (isMyTeam ? (
+      {tab === 'team' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
           <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt.</p>
@@ -1694,27 +1695,32 @@ export default function App() {
                 <tr>
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
-                  <th>Niveau</th>
-                  {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short}</th>)}
-                  <th style={{ fontSize: '12px' }}>KP</th>
+                  {/* Niveau is de enige kolom die niet voor iedereen zichtbaar is - alleen coaches
+                      (of admin) van dít team zien 'm; coaches van een ander team en bezoekers die
+                      niet zijn ingelogd zien de rest van de teampagina wel, maar deze kolom niet. */}
+                  {isMyTeam && <th>Niveau</th>}
+                  {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
+                  <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}</td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="tag" style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
-                    <td style={{ textAlign: 'center' }}>
-                      <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
-                        {LEVELS.map(lv => <option key={lv.v} value={lv.v}>{lv.label}</option>)}
-                      </select>
-                    </td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name} ({r.posCount})</td>
+                    <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
+                    {isMyTeam && (
+                      <td style={{ textAlign: 'center' }}>
+                        <select className="input" aria-label={`Niveau van ${r.name}`} style={css('padding:6px 8px;min-width:170px;font-size:15px;font-weight:500')} value={r.level} onChange={r.onLevel}>
+                          {LEVELS.map(lv => <option key={lv.v} value={lv.v}>{lv.label}</option>)}
+                        </select>
+                      </td>
+                    )}
                     {r.cells.map(c => (
-                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
+                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} disabled={readOnly} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
                     ))}
-                    <td style={{ textAlign: 'center' }}><input type="checkbox" checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
+                    <td style={{ textAlign: 'center' }}><input type="checkbox" aria-label={`Vaste keeper: ${r.name}`} checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
+                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1723,16 +1729,18 @@ export default function App() {
           <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
             <strong>Legenda</strong> — {POS.map(p => p.k + ': ' + p.label).join(' · ')} · KP: Vaste keeper
           </p>
-          <div style={css('display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;padding-top:var(--space-2)')}>
-            <div className="field"><label htmlFor="nn">Nieuwe speelster</label><input className="input" id="nn" type="text" placeholder="Voornaam Achternaam" value={newName} onChange={e => setNewName(e.target.value)} /></div>
-            <label style={css('display:flex;align-items:center;gap:6px;font-size:16px;cursor:pointer;padding-bottom:9px')}>
-              <input type="checkbox" checked={newIsSub} onChange={e => setNewIsSub(e.target.checked)} />
-              <span>Dit is een invaller</span>
-            </label>
-            <button type="button" className="btn btn-primary" disabled={readOnly} onClick={addPlayer}>Toevoegen</button>
-          </div>
+          {!readOnly && (
+            <div style={css('display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;padding-top:var(--space-2)')}>
+              <div className="field"><label htmlFor="nn">Nieuwe speelster</label><input className="input" id="nn" type="text" placeholder="Voornaam Achternaam" value={newName} onChange={e => setNewName(e.target.value)} /></div>
+              <label style={css('display:flex;align-items:center;gap:6px;font-size:16px;cursor:pointer;padding-bottom:9px')}>
+                <input type="checkbox" checked={newIsSub} onChange={e => setNewIsSub(e.target.checked)} />
+                <span>Dit is een invaller</span>
+              </label>
+              <button type="button" className="btn btn-primary" onClick={addPlayer}>Toevoegen</button>
+            </div>
+          )}
         </main>
-      ) : accessGate('Team'))}
+      )}
 
       {tab === 'sc' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
@@ -1748,7 +1756,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
+                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
@@ -1771,7 +1779,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{p.first}</option>)}
+                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
@@ -1837,12 +1845,25 @@ export default function App() {
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Teams</h2>
           <div style={{ overflowX: 'auto' }}>
             <table className="table">
-              <thead><tr><th style={{ textAlign: 'left' }}>Naam</th><th style={{ textAlign: 'left' }}>Team-id</th>{isAdmin && <th></th>}</tr></thead>
+              <thead><tr><th style={{ textAlign: 'left' }}>Naam</th><th style={{ textAlign: 'left' }}>Team-id</th><th style={{ textAlign: 'center' }}>Standaard</th>{isAdmin && <th></th>}</tr></thead>
               <tbody>
-                {teams.map(t => (
+                {visibleTeams.map(t => (
                   <tr key={t.id}>
                     <td style={{ textAlign: 'left' }}>{t.name}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', fontFamily: 'monospace' }}>{t.id}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      {t.id === defaultTeamId ? (
+                        <span className="tag tag-accent">Standaard</span>
+                      ) : isAdmin ? (
+                        <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={async () => {
+                          setTeamError('');
+                          try { await setDefaultTeam(t.id); }
+                          catch (e) { setTeamError(e.message || 'Instellen mislukt.'); }
+                        }}>Maak standaard</button>
+                      ) : (
+                        <span style={{ color: 'var(--color-neutral-700)' }}>—</span>
+                      )}
+                    </td>
                     {isAdmin && (
                       <td style={{ textAlign: 'center' }}>
                         <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={async () => {
@@ -1855,13 +1876,65 @@ export default function App() {
                     )}
                   </tr>
                 ))}
-                {!teams.length && <tr><td colSpan={isAdmin ? 3 : 2} style={{ color: 'var(--color-neutral-700)' }}>Nog geen teams.</td></tr>}
+                {!visibleTeams.length && (
+                  <tr><td colSpan={isAdmin ? 4 : 3} style={{ color: 'var(--color-neutral-700)' }}>
+                    {!teams.length ? 'Nog geen teams.' : !user ? 'Log in om je team te zien.' : 'Je bent aan geen enkel team gekoppeld.'}
+                  </td></tr>
+                )}
               </tbody>
             </table>
           </div>
           <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
-            Het team-id heb je nodig om een nieuwe gebruiker aan dit team te koppelen (in de Firestore-console, onder <code>users/&#123;uid&#125;</code>).
+            Het standaardteam is wat bezoekers zien bij het openen van de site, zolang ze niet zijn ingelogd bij een ander team.
           </p>
+          {isAdmin && (
+            <div style={css('display:flex;flex-direction:column;gap:var(--space-4)')}>
+              <div>
+                <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 4px;font-weight:600')}>Coaches per team</h2>
+                <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
+                  Een team mag meerdere coaches hebben. Nieuw e-mailadres → wordt een account aangemaakt en krijgt een mail om een wachtwoord in te stellen; bestaand e-mailadres → wordt alleen aan dit team gekoppeld.
+                </p>
+              </div>
+              {teams.map(t => {
+                const coaches = allUsers.filter(u => u.teamId === t.id);
+                return (
+                  <div key={t.id} className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
+                    <div className="card-title">{t.name}</div>
+                    {coaches.length ? (
+                      <div style={css('display:flex;flex-direction:column;gap:6px')}>
+                        {coaches.map(c => (
+                          <div key={c.uid} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:15px')}>
+                            <span>{c.email}{c.role === 'admin' ? ' · admin' : ''}</span>
+                            <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={() => unlinkCoach(c.uid, t.id)}>Loskoppelen</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="card-body" style={css('margin:0')}>Nog geen coaches gekoppeld.</p>
+                    )}
+                    <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
+                      <div className="field" style={css('margin:0;flex:1;min-width:200px')}>
+                        <label htmlFor={`coach-contact-${t.id}`}>E-mailadres</label>
+                        {/* type="text" + inputMode="email", not type="email": Chrome's address-autofill
+                            keys heavily off type="email" (autoComplete="off" alone does NOT suppress it -
+                            Chrome deliberately ignores "off" for its own address/contact autofill) and,
+                            once one of several identically-labeled fields on the page is filled from a
+                            suggestion, fills every other field it also recognizes as "email" with the same
+                            value. inputMode keeps the email keyboard on mobile; the name/id deliberately
+                            avoid the word "email" too, since that's part of the same heuristic. */}
+                        <input className="input" id={`coach-contact-${t.id}`} name={`coach-contact-${t.id}`} type="text" inputMode="email" autoComplete="off" value={coachEmailByTeam[t.id] || ''}
+                          onChange={e => setCoachEmailByTeam(m => ({ ...m, [t.id]: e.target.value }))} />
+                      </div>
+                      <button type="button" className="btn btn-secondary" disabled={coachBusyByTeam[t.id]} onClick={() => addCoach(t.id)}>
+                        {coachBusyByTeam[t.id] ? 'Bezig…' : 'Coach toevoegen'}
+                      </button>
+                    </div>
+                    {coachErrorByTeam[t.id] && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{coachErrorByTeam[t.id]}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {isMyTeam && (
             <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
@@ -1923,6 +1996,44 @@ export default function App() {
               {user ? 'Alleen beheerders kunnen nieuwe teams aanmaken.' : 'Log in als beheerder om een nieuw team aan te maken.'}
             </p>
           )}
+        </main>
+      )}
+
+      {tab === 'inlog' && isAdmin && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4);max-width:640px')}>
+          <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Inlogpogingen</h2>
+          <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
+            Per gebruiker de laatste 50 succesvolle logins. Klik op een gebruiker om die open te klappen.
+          </p>
+          <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+            {allUsers.map(u => {
+              const open = expandedUserUid === u.uid;
+              const teamName = u.role === 'admin' ? 'Beheerder' : ((teams.find(t => t.id === u.teamId) || {}).name || '—');
+              const panelId = `logins-${u.uid}`;
+              return (
+                <div key={u.uid} className="card elev-sm" style={css('padding:0;overflow:hidden')}>
+                  <button type="button" aria-expanded={open} aria-controls={panelId}
+                    onClick={() => setExpandedUserUid(open ? null : u.uid)}
+                    style={css('width:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:var(--space-3);background:none;border:none;cursor:pointer;text-align:left;font-family:var(--font-body);font-size:15px;color:var(--color-text)')}>
+                    <span>{u.email || u.uid}</span>
+                    <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{teamName}</span>
+                  </button>
+                  {open && (
+                    <div id={panelId} style={css('padding:0 var(--space-3) var(--space-3);display:flex;flex-direction:column;gap:4px')}>
+                      {(u.logins || []).length ? u.logins.map(ts => (
+                        <div key={ts} style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                          {new Date(ts).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                        </div>
+                      )) : (
+                        <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen logins geregistreerd.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!allUsers.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen gebruikers.</p>}
+          </div>
         </main>
       )}
     </div>
