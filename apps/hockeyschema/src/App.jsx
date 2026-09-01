@@ -1157,6 +1157,10 @@ export default function App() {
   // is. Telt alle wedstrijden mee (verleden én toekomst), behalve de rij die je nu bekijkt.
   const pauzehapCount = (playerId, excludeFixtureId) =>
     fixtures.filter(x => x.id !== excludeFixtureId && x.pauzehapId === playerId).length;
+  // Zelfde idee, maar dan voor het aantal keer dat iemand al is ingedeeld om te rijden (in
+  // om het even welke van de 4 rijder-plekken), zodat ook dat eerlijk te verdelen is.
+  const rijderCount = (playerId, excludeFixtureId) =>
+    fixtures.filter(x => x.id !== excludeFixtureId && (x.rijders || []).indexOf(playerId) >= 0).length;
 
   const ouderRowsAll = fixturesSorted.map(f => {
     const upd = obj => { if (!canManageOuders) return; setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
@@ -1188,7 +1192,10 @@ export default function App() {
           key: i,
           active: !f.home,
           value: rijders[i] || '',
-          options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0),
+          options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0).map(p => {
+            const n = rijderCount(p.id, f.id);
+            return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
+          }),
           onChange: e => {
             const next = rijders.slice(0, RIJDER_SLOTS);
             while (next.length < RIJDER_SLOTS) next.push(null);
@@ -1863,7 +1870,7 @@ export default function App() {
                         <input className="input" aria-label={`Verzameltijd ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} />
                       </td>
                       <td style={{ padding: '4px 6px' }}>
-                        <input className="input" aria-label={`Start ${r.waar} ${r.datum}`} type="time" disabled style={css('padding:4px 6px')} value={r.startTijd} readOnly />
+                        <input className="input" aria-label={`Start ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} readOnly style={css('padding:4px 6px')} value={r.startTijd} />
                       </td>
                       <td style={{ padding: '4px 6px' }}>
                         <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
@@ -1876,7 +1883,7 @@ export default function App() {
                           {s.active ? (
                             <select className="input" aria-label={`Rijder ${s.key + 1} ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
                               <option value="">—</option>
-                              {s.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                              {s.options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
                             </select>
                           ) : '—'}
                         </td>
