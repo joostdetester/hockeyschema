@@ -1196,7 +1196,7 @@ export default function App() {
           </section>
 
           {matchLocked && (
-            <div className="card elev-md" style={css('padding:var(--space-3) var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
+            <div className="card elev-md" data-noprint="1" style={css('padding:var(--space-3) var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
               <span style={css('font-size:16px')}>Dit schema is opgeslagen en staat op alleen-lezen.</span>
               <button type="button" className="btn btn-secondary" disabled={readOnly} onClick={reopenMatch}>Bewerken heropenen</button>
             </div>
