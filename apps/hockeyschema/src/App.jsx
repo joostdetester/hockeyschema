@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
-import { db } from './firebase.js';
+import { doc, onSnapshot, setDoc, getDoc, collection } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { sendPasswordResetEmail } from 'firebase/auth';
+import { db, functions, auth } from './firebase.js';
 import { useAuth } from './AuthContext.jsx';
 import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
@@ -308,6 +310,10 @@ export default function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [teamError, setTeamError] = useState('');
+  const [allUsers, setAllUsers] = useState([]);
+  const [coachEmailByTeam, setCoachEmailByTeam] = useState({});
+  const [coachBusyByTeam, setCoachBusyByTeam] = useState({});
+  const [coachErrorByTeam, setCoachErrorByTeam] = useState({});
   const [lisaConfig, setLisaConfig] = useState(null);
   const [lisaForm, setLisaForm] = useState({ clubDudaId: '', teamId: '', teamName: '', authHeader: '' });
   const [lisaBusy, setLisaBusy] = useState(false);
@@ -399,6 +405,50 @@ export default function App() {
         : { clubDudaId: '', teamId: '', teamName: '', authHeader: '' });
     });
   }, [currentTeamId, canSeeHistory]);
+
+  // Alle gebruikers, om per team te tonen wie er als coach aan gekoppeld is - alleen
+  // beheerders mogen andermans users/{uid} lezen (zie firestore.rules).
+  useEffect(() => {
+    if (!isAdmin) { setAllUsers([]); return; }
+    return onSnapshot(collection(db, 'users'), snap => {
+      setAllUsers(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
+    });
+  }, [isAdmin]);
+
+  // Maakt (indien nodig) het account aan via een Cloud Function - dat vereist Admin-
+  // rechten, want de client-SDK kan alleen de eigen ingelogde gebruiker aanmaken/wijzigen,
+  // niet een account voor een ander e-mailadres zonder de beheerder zelf uit te loggen.
+  // Bij een nieuw account sturen we daarna zelf de wachtwoord-instel-mail - dat is een
+  // gewone publieke Firebase Auth-aanroep, geen extra infrastructuur nodig.
+  async function addCoach(teamId) {
+    const email = (coachEmailByTeam[teamId] || '').trim();
+    if (!email) { setCoachErrorByTeam(m => ({ ...m, [teamId]: 'Vul een e-mailadres in.' })); return; }
+    setCoachBusyByTeam(m => ({ ...m, [teamId]: true }));
+    setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
+    try {
+      const call = httpsCallable(functions, 'addCoachToTeam');
+      const res = await call({ email, teamId });
+      if (res.data && res.data.created) {
+        await sendPasswordResetEmail(auth, email);
+      }
+      setCoachEmailByTeam(m => ({ ...m, [teamId]: '' }));
+    } catch (e) {
+      setCoachErrorByTeam(m => ({ ...m, [teamId]: e.message || 'Toevoegen mislukt.' }));
+    } finally {
+      setCoachBusyByTeam(m => ({ ...m, [teamId]: false }));
+    }
+  }
+
+  // Loskoppelen is een gewone Firestore-write (geen nieuw account, geen Auth-actie nodig),
+  // dus dat kan direct vanuit de client - beheerders mogen users/{uid} schrijven.
+  async function unlinkCoach(uid, teamId) {
+    setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
+    try {
+      await setDoc(doc(db, 'users', uid), { teamId: null }, { merge: true });
+    } catch (e) {
+      setCoachErrorByTeam(m => ({ ...m, [teamId]: e.message || 'Loskoppelen mislukt.' }));
+    }
+  }
 
   async function fetchLisaTeams() {
     const clubDudaId = lisaForm.clubDudaId.trim();
@@ -1847,9 +1897,47 @@ export default function App() {
           <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
             Het standaardteam is wat bezoekers zien bij het openen van de site, zolang ze niet zijn ingelogd bij een ander team.
           </p>
-          <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
-            Het team-id heb je nodig om een nieuwe gebruiker aan dit team te koppelen (in de Firestore-console, onder <code>users/&#123;uid&#125;</code>).
-          </p>
+          {isAdmin && (
+            <div style={css('display:flex;flex-direction:column;gap:var(--space-4)')}>
+              <div>
+                <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 4px;font-weight:600')}>Coaches per team</h2>
+                <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
+                  Een team mag meerdere coaches hebben. Nieuw e-mailadres → wordt een account aangemaakt en krijgt een mail om een wachtwoord in te stellen; bestaand e-mailadres → wordt alleen aan dit team gekoppeld.
+                </p>
+              </div>
+              {teams.map(t => {
+                const coaches = allUsers.filter(u => u.teamId === t.id);
+                return (
+                  <div key={t.id} className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
+                    <div className="card-title">{t.name}</div>
+                    {coaches.length ? (
+                      <div style={css('display:flex;flex-direction:column;gap:6px')}>
+                        {coaches.map(c => (
+                          <div key={c.uid} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:15px')}>
+                            <span>{c.email}{c.role === 'admin' ? ' · admin' : ''}</span>
+                            <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={() => unlinkCoach(c.uid, t.id)}>Loskoppelen</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="card-body" style={css('margin:0')}>Nog geen coaches gekoppeld.</p>
+                    )}
+                    <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
+                      <div className="field" style={css('margin:0;flex:1;min-width:200px')}>
+                        <label htmlFor={`coach-email-${t.id}`}>E-mailadres</label>
+                        <input className="input" id={`coach-email-${t.id}`} type="email" value={coachEmailByTeam[t.id] || ''}
+                          onChange={e => setCoachEmailByTeam(m => ({ ...m, [t.id]: e.target.value }))} />
+                      </div>
+                      <button type="button" className="btn btn-secondary" disabled={coachBusyByTeam[t.id]} onClick={() => addCoach(t.id)}>
+                        {coachBusyByTeam[t.id] ? 'Bezig…' : 'Coach toevoegen'}
+                      </button>
+                    </div>
+                    {coachErrorByTeam[t.id] && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{coachErrorByTeam[t.id]}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {isMyTeam && (
             <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>

@@ -22,8 +22,8 @@ service cloud.firestore {
       allow write: if isTeamMember(teamId);
     }
     match /users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if false;
+      allow read: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
     }
     match /settings/app {
       allow read: if true;
