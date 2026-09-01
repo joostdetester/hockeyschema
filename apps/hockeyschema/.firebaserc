@@ -4,5 +4,29 @@
     "acceptatie": "hockeyschema-acc",
     "productie": "hockeyschema-prod",
     "default": "hockeyschema-prod"
-  }
+  },
+  "targets": {
+    "hockeyschema-test": {
+      "hosting": {
+        "app": [
+          "hockeyschema-test"
+        ]
+      }
+    },
+    "hockeyschema-acc": {
+      "hosting": {
+        "app": [
+          "hockeyschema-acc"
+        ]
+      }
+    },
+    "hockeyschema-prod": {
+      "hosting": {
+        "app": [
+          "hockeyschema"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
