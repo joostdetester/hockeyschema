@@ -1754,14 +1754,16 @@ export default function App() {
           <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
             <strong>Legenda</strong> — {POS.map(p => p.k + ': ' + p.label).join(' · ')} · KP: Vaste keeper
           </p>
-          <div style={css('display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;padding-top:var(--space-2)')}>
-            <div className="field"><label htmlFor="nn">Nieuwe speelster</label><input className="input" id="nn" type="text" placeholder="Voornaam Achternaam" value={newName} onChange={e => setNewName(e.target.value)} /></div>
-            <label style={css('display:flex;align-items:center;gap:6px;font-size:16px;cursor:pointer;padding-bottom:9px')}>
-              <input type="checkbox" checked={newIsSub} onChange={e => setNewIsSub(e.target.checked)} />
-              <span>Dit is een invaller</span>
-            </label>
-            <button type="button" className="btn btn-primary" disabled={readOnly} onClick={addPlayer}>Toevoegen</button>
-          </div>
+          {!readOnly && (
+            <div style={css('display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;padding-top:var(--space-2)')}>
+              <div className="field"><label htmlFor="nn">Nieuwe speelster</label><input className="input" id="nn" type="text" placeholder="Voornaam Achternaam" value={newName} onChange={e => setNewName(e.target.value)} /></div>
+              <label style={css('display:flex;align-items:center;gap:6px;font-size:16px;cursor:pointer;padding-bottom:9px')}>
+                <input type="checkbox" checked={newIsSub} onChange={e => setNewIsSub(e.target.checked)} />
+                <span>Dit is een invaller</span>
+              </label>
+              <button type="button" className="btn btn-primary" onClick={addPlayer}>Toevoegen</button>
+            </div>
+          )}
         </main>
       )}
 
