@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { doc, onSnapshot, setDoc, getDoc, collection } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { sendPasswordResetEmail } from 'firebase/auth';
@@ -1162,9 +1162,6 @@ export default function App() {
     const upd = obj => { if (!canManageOuders) return; setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
     const rijders = f.rijders || [];
     const isPast = !!f.date && f.date < todayISO;
-    const mapsUrl = !f.home && f.opponent
-      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(f.opponent + ' hockeyclub')
-      : null;
     return {
       key: f.id,
       isPast,
@@ -1173,19 +1170,20 @@ export default function App() {
       datum: nlDate(f.date),
       verzameltijd: f.verzameltijd || '',
       onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
-      startTijd: f.time ? f.time + ' uur' : '—',
+      startTijd: f.time || '—',
       pauzehapId: f.pauzehapId || '',
       onPauzehap: e => upd({ pauzehapId: e.target.value || null }),
       pauzehapOptions: players.map(p => {
         const n = pauzehapCount(p.id, f.id);
         return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
       }),
-      mapsUrl,
-      rijderSlots: f.home ? [] : Array.from({ length: RIJDER_SLOTS }, (_, i) => {
+      // Altijd 4 slots (ook bij thuis) zodat elke rij dezelfde kolommen heeft in de tabel -
+      // bij thuis is active false en toont de cel gewoon een streepje, geen keuzelijst.
+      rijderSlots: Array.from({ length: RIJDER_SLOTS }, (_, i) => {
         const chosenElsewhere = rijders.filter((id, j) => j !== i && id);
         return {
           key: i,
-          label: `Rijder ${i + 1}`,
+          active: !f.home,
           value: rijders[i] || '',
           options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0),
           onChange: e => {
@@ -1838,42 +1836,50 @@ export default function App() {
             </label>
           )}
           {ouderRows.length ? (
-            <div style={css('display:flex;flex-direction:column;gap:var(--space-5)')}>
-              {ouderRows.map(r => (
-                <div key={r.key} className="card elev-sm" style={css('display:flex;gap:var(--space-4);flex-wrap:wrap;justify-content:space-between')}>
-                  <dl style={css('margin:0;display:grid;grid-template-columns:auto auto;gap:6px var(--space-3);align-items:center')}>
-                    <dt style={css('font-weight:600')}>Waar</dt><dd style={css('margin:0')}>{r.waar}</dd>
-                    <dt style={css('font-weight:600')}>Datum</dt><dd style={css('margin:0')}>{r.datum}</dd>
-                    <dt style={css('font-weight:600')}><label htmlFor={`verzameltijd-${r.key}`}>Verzameltijd</label></dt>
-                    <dd style={css('margin:0;display:flex;align-items:center;gap:6px')}><input className="input" id={`verzameltijd-${r.key}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} /> uur</dd>
-                    <dt style={css('font-weight:600')}>Start tijd</dt><dd style={css('margin:0')}>{r.startTijd}</dd>
-                    <dt style={css('font-weight:600')}><label htmlFor={`pauzehap-${r.key}`}>Pauzehap</label></dt>
-                    <dd style={css('margin:0')}>
-                      <select className="input" id={`pauzehap-${r.key}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
-                        <option value="">—</option>
-                        {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-                      </select>
-                    </dd>
-                    {r.rijderSlots.map(s => (
-                      <Fragment key={s.key}>
-                        <dt style={css('font-weight:600')}><label htmlFor={`rijder-${r.key}-${s.key}`}>{s.label}</label></dt>
-                        <dd style={css('margin:0')}>
-                          <select className="input" id={`rijder-${r.key}-${s.key}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
-                            <option value="">—</option>
-                            {s.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
-                          </select>
-                        </dd>
-                      </Fragment>
-                    ))}
-                  </dl>
-                  {r.mapsUrl && (
-                    <a href={r.mapsUrl} target="_blank" rel="noreferrer" className="card elev-sm" style={css('display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;text-align:center;min-width:120px;padding:var(--space-3);text-decoration:none;color:var(--color-text)')}>
-                      <span style={css('font-size:14px;font-weight:600')}>Route ↗</span>
-                      <span style={css('font-size:12px;color:var(--color-neutral-700)')}>via Google Maps</span>
-                    </a>
-                  )}
-                </div>
-              ))}
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table" style={css('white-space:nowrap')}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>📍 Waar</th>
+                    <th style={{ padding: '4px 6px' }}>📅 Datum</th>
+                    <th style={{ padding: '4px 6px' }}>⏰ Verzameltijd</th>
+                    <th style={{ padding: '4px 6px' }}>🏁 Start</th>
+                    <th style={{ padding: '4px 6px' }}>🥪 Pauzehap</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 1</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 2</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 3</th>
+                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 4</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ouderRows.map(r => (
+                    <tr key={r.key}>
+                      <td style={{ textAlign: 'left', padding: '4px 6px' }}>{r.waar}</td>
+                      <td style={{ padding: '4px 6px' }}>{r.datum}</td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <input className="input" aria-label={`Verzameltijd ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} />
+                      </td>
+                      <td style={{ padding: '4px 6px' }}>{r.startTijd}</td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
+                          <option value="">—</option>
+                          {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                        </select>
+                      </td>
+                      {r.rijderSlots.map(s => (
+                        <td key={s.key} style={{ padding: '4px 6px' }}>
+                          {s.active ? (
+                            <select className="input" aria-label={`Rijder ${s.key + 1} ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
+                              <option value="">—</option>
+                              {s.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                            </select>
+                          ) : '—'}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <p className="card-body" style={css('margin:0')}>{fixtures.length ? 'Geen aankomende wedstrijden.' : 'Nog geen wedstrijden in het programma.'}</p>
