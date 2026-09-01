@@ -284,7 +284,7 @@ const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuri
 
 export default function App() {
   const { user, myTeamId, isAdmin, logout } = useAuth();
-  const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam } = useTeam();
+  const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam, defaultTeamId, setDefaultTeam } = useTeam();
 
   const [tab, setTab] = useState('programma');
   const [players, setPlayers] = useState([]);
@@ -1809,12 +1809,25 @@ export default function App() {
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Teams</h2>
           <div style={{ overflowX: 'auto' }}>
             <table className="table">
-              <thead><tr><th style={{ textAlign: 'left' }}>Naam</th><th style={{ textAlign: 'left' }}>Team-id</th>{isAdmin && <th></th>}</tr></thead>
+              <thead><tr><th style={{ textAlign: 'left' }}>Naam</th><th style={{ textAlign: 'left' }}>Team-id</th><th style={{ textAlign: 'center' }}>Standaard</th>{isAdmin && <th></th>}</tr></thead>
               <tbody>
                 {teams.map(t => (
                   <tr key={t.id}>
                     <td style={{ textAlign: 'left' }}>{t.name}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', fontFamily: 'monospace' }}>{t.id}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      {t.id === defaultTeamId ? (
+                        <span className="tag tag-accent">Standaard</span>
+                      ) : isAdmin ? (
+                        <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={async () => {
+                          setTeamError('');
+                          try { await setDefaultTeam(t.id); }
+                          catch (e) { setTeamError(e.message || 'Instellen mislukt.'); }
+                        }}>Maak standaard</button>
+                      ) : (
+                        <span style={{ color: 'var(--color-neutral-700)' }}>—</span>
+                      )}
+                    </td>
                     {isAdmin && (
                       <td style={{ textAlign: 'center' }}>
                         <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={async () => {
@@ -1827,10 +1840,13 @@ export default function App() {
                     )}
                   </tr>
                 ))}
-                {!teams.length && <tr><td colSpan={isAdmin ? 3 : 2} style={{ color: 'var(--color-neutral-700)' }}>Nog geen teams.</td></tr>}
+                {!teams.length && <tr><td colSpan={isAdmin ? 4 : 3} style={{ color: 'var(--color-neutral-700)' }}>Nog geen teams.</td></tr>}
               </tbody>
             </table>
           </div>
+          <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
+            Het standaardteam is wat bezoekers zien bij het openen van de site, zolang ze niet zijn ingelogd bij een ander team.
+          </p>
           <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:60ch;text-wrap:pretty')}>
             Het team-id heb je nodig om een nieuwe gebruiker aan dit team te koppelen (in de Firestore-console, onder <code>users/&#123;uid&#125;</code>).
           </p>

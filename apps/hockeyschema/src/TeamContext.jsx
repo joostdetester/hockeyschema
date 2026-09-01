@@ -25,20 +25,46 @@ export function TeamProvider({ children }) {
   const [teams, setTeams] = useState([]);
   const [teamsLoaded, setTeamsLoaded] = useState(false);
   const [currentTeamId, setCurrentTeamId] = useState(null);
+  const [defaultTeamId, setDefaultTeamIdState] = useState(null);
+  const [defaultTeamLoaded, setDefaultTeamLoaded] = useState(false);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'teams'), snap => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
       setTeams(list);
       setTeamsLoaded(true);
-      setCurrentTeamId(cur => cur && list.some(t => t.id === cur) ? cur : (list[0]?.id || null));
+      // Alleen resetten als de huidige keuze niet meer bestaat (bijv. verwijderd team) - de
+      // eerste keuze zelf gebeurt hieronder, pas als ook bekend is of er een standaardteam is.
+      setCurrentTeamId(cur => cur && list.some(t => t.id === cur) ? cur : null);
     });
   }, []);
+
+  useEffect(() => {
+    return onSnapshot(doc(db, 'settings', 'app'), snap => {
+      setDefaultTeamIdState((snap.data() || {}).defaultTeamId || null);
+      setDefaultTeamLoaded(true);
+    }, () => setDefaultTeamLoaded(true));
+  }, []);
+
+  // Kiest het standaardteam (via Teams ingesteld) zodra zowel de teamlijst als het
+  // standaardteam geladen zijn, en er nog geen (geldige) keuze is - wachten op allebei
+  // voorkomt dat dit alvast op het eerste team alfabetisch uitkomt terwijl het
+  // standaardteam nog onderweg is (wat daarna niet meer gecorrigeerd zou worden, want
+  // currentTeamId is dan al geldig).
+  useEffect(() => {
+    if (!teamsLoaded || !defaultTeamLoaded || currentTeamId) return;
+    const fallback = (defaultTeamId && teams.some(t => t.id === defaultTeamId)) ? defaultTeamId : (teams[0]?.id || null);
+    if (fallback) setCurrentTeamId(fallback);
+  }, [teamsLoaded, defaultTeamLoaded, defaultTeamId, teams, currentTeamId]);
 
   // Bij inloggen automatisch naar het eigen team wisselen.
   useEffect(() => {
     if (myTeamId) setCurrentTeamId(myTeamId);
   }, [myTeamId]);
+
+  async function setDefaultTeam(teamId) {
+    await setDoc(doc(db, 'settings', 'app'), { defaultTeamId: teamId });
+  }
 
   async function createTeam(name) {
     const trimmed = name.trim();
@@ -64,7 +90,7 @@ export function TeamProvider({ children }) {
   }
 
   return (
-    <TeamCtx.Provider value={{ teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam }}>
+    <TeamCtx.Provider value={{ teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam, defaultTeamId, setDefaultTeam }}>
       {children}
     </TeamCtx.Provider>
   );
