@@ -2006,10 +2006,10 @@ export default function App() {
               <tbody>
                 {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
-                    <td><input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} /></td>
+                    <td>{readOnly ? nlDate(f.date) : <input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} />}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.day}</td>
-                    <td><input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.verzameltijd} onChange={f.onVerzameltijd} /></td>
-                    <td><input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} /></td>
+                    <td>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px;width:110px')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
+                    <td>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} />}</td>
                     <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
                       <span style={css(f.homeStyle)}>{f.homeName}{f.home ? ' ♥' : ''}</span>
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
@@ -2017,9 +2017,13 @@ export default function App() {
                       <div style={css('padding-top:3px')}><button type="button" disabled={readOnly} onClick={f.toggleFriendly} style={css(f.friendlyStyle)}>Oefenwedstrijd</button></div>
                     </td>
                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                      <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.gf} onChange={f.onGf} />
-                      <span style={{ padding: '0 3px' }}>–</span>
-                      <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('width:44px;text-align:center;padding:4px')} value={f.ga} onChange={f.onGa} />
+                      {readOnly ? (f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—') : (
+                        <>
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:44px;text-align:center;padding:4px')} value={f.gf} onChange={f.onGf} />
+                          <span style={{ padding: '0 3px' }}>–</span>
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:44px;text-align:center;padding:4px')} value={f.ga} onChange={f.onGa} />
+                        </>
+                      )}
                     </td>
                     <td style={{ textAlign: 'center' }}>{f.points}</td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-secondary" disabled={readOnly} style={{ padding: '3px 10px' }} onClick={f.plan}>{f.planLabel}</button></td>
