@@ -42,16 +42,39 @@ exports.addCoachToTeam = onCall(async (request) => {
     created = true;
   }
 
-  // Never downgrade an existing admin to coach/manager just because their email got added
-  // to a team here - an admin's role is untouchable through this call, everyone else's role
-  // is whatever the caller picked (coach or manager), even on an already-linked account.
+  // A coach/manager can belong to several teams at once, each with its own role, so this
+  // merges the new team+role into the existing `teams` map rather than overwriting a single
+  // teamId/role pair (which used to "move" someone to the newly-added team instead of also
+  // linking them there). `role` at the top level stays reserved for the global 'admin' flag -
+  // never downgrade an existing admin just because their email got added to a team here, and
+  // never write coach/manager into that field (their role lives in `teams` instead).
   const existingSnap = created ? null : await admin.firestore().doc(`users/${userRecord.uid}`).get();
-  const existingRole = existingSnap && existingSnap.exists ? existingSnap.data().role : null;
-  const role = existingRole === 'admin' ? 'admin' : requestedRole;
+  const existingData = existingSnap && existingSnap.exists ? existingSnap.data() : {};
+  const isExistingAdmin = existingData.role === 'admin';
 
-  await admin.firestore().doc(`users/${userRecord.uid}`).set({ email, teamId, role }, { merge: true });
+  let teams = { ...(existingData.teams || {}) };
+  // Backward compat: fold a legacy single teamId/role pair into the map before adding the
+  // new one, so a not-yet-migrated account ends up with both its old and new team linked
+  // instead of losing the old one.
+  if (!Object.keys(teams).length && existingData.teamId && existingData.role && existingData.role !== 'admin') {
+    teams[existingData.teamId] = existingData.role;
+  }
+  teams[teamId] = requestedRole;
 
-  return { uid: userRecord.uid, created };
+  const FieldValue = admin.firestore.FieldValue;
+  await admin.firestore().doc(`users/${userRecord.uid}`).set({
+    email, teams,
+    teamId: FieldValue.delete(),
+    role: isExistingAdmin ? 'admin' : FieldValue.delete(),
+  }, { merge: true });
+
+  // Naast "created" ook teruggeven of dit account al een wachtwoord heeft: een eerdere poging
+  // kan het account wél hebben aangemaakt maar de wachtwoord-mail (client-side, zie hierboven)
+  // toen niet succesvol verstuurd - zonder deze vlag zou een latere poging "created: false"
+  // teruggeven en de mail dan stilzwijgend overslaan, terwijl er nog steeds geen wachtwoord
+  // op het account staat.
+  const hasPassword = userRecord.providerData.some(p => p.providerId === 'password');
+  return { uid: userRecord.uid, created, hasPassword };
 });
 
 // Anyone (including logged-out visitors) may refresh a team's standings - it's public,

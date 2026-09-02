@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { doc, onSnapshot, setDoc, getDoc, collection } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, getDoc, collection, deleteField } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { db, functions, auth } from './firebase.js';
@@ -348,8 +348,11 @@ const CELL = 'flex:0 0 31%;min-width:0;padding:5px 7px;border-radius:var(--radiu
 const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null };
 
 export default function App() {
-  const { user, myTeamId, role, isAdmin, logout } = useAuth();
+  const { user, myTeams, role, isAdmin, logout } = useAuth();
   const { teams, teamsLoaded, currentTeamId, setCurrentTeamId, createTeam, deleteTeam, defaultTeamId, setDefaultTeam } = useTeam();
+  // Rol van de ingelogde gebruiker specifiek voor het team dat nu bekeken wordt - iemand kan
+  // coach van het ene team zijn en manager van een ander, dus dit hangt af van currentTeamId.
+  const myRoleForCurrentTeam = (myTeams && currentTeamId && myTeams[currentTeamId]) || null;
 
   const [tab, setTab] = useState('programma');
   const [players, setPlayers] = useState([]);
@@ -395,16 +398,17 @@ export default function App() {
   const [showPastFixtures, setShowPastFixtures] = useState(false);
   const migratedRef = useRef(false);
 
-  // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin) - een
-  // manager telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via
-  // canManageOuders hieronder specifiek het bewerken van Ouders.
-  const isMyTeam = !!user && ((myTeamId === currentTeamId && role !== 'manager') || isAdmin);
+  // isMyTeam: ingelogd én (coach van het bekeken team, of gebruiker is admin) - een manager
+  // telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via canManageOuders
+  // hieronder specifiek het bewerken van Ouders. Iemand kan coach van meerdere teams zijn -
+  // myRoleForCurrentTeam is al gescopet op het team dat nu bekeken wordt.
+  const isMyTeam = !!user && ((myRoleForCurrentTeam && myRoleForCurrentTeam !== 'manager') || isAdmin);
   const readOnly = !isMyTeam;
   const canSeeHistory = isMyTeam;
   // Ouders is - anders dan de rest - zichtbaar voor iedereen (ook uitgelogd), zie
   // LOGGED_IN_ONLY_TABS hieronder. Bewerken mag alleen de manager van dit team, of een admin -
   // bewust géén coach, die krijgt hier geen extra rechten via isMyTeam.
-  const canManageOuders = isAdmin || (!!user && role === 'manager' && myTeamId === currentTeamId);
+  const canManageOuders = isAdmin || myRoleForCurrentTeam === 'manager';
 
   const publicSyncRef = useRef('');
   const managerFixturesSyncRef = useRef('');
@@ -504,11 +508,22 @@ export default function App() {
     });
   }, [isAdmin]);
 
+  // Backward compat, zelfde als in AuthContext.jsx: een gebruikersdoc dat nog niet door de
+  // huidige addCoachToTeam is aangeraakt, heeft nog het oude losse teamId/role-veld i.p.v. de
+  // teams-kaart - hier zowel gebruikt voor de coach/manager-lijst per team als Inlogpogingen.
+  const teamsOf = u => {
+    const teams = u.teams || {};
+    if (Object.keys(teams).length || !u.teamId || !u.role || u.role === 'admin') return teams;
+    return { [u.teamId]: u.role };
+  };
+
   // Maakt (indien nodig) het account aan via een Cloud Function - dat vereist Admin-
   // rechten, want de client-SDK kan alleen de eigen ingelogde gebruiker aanmaken/wijzigen,
   // niet een account voor een ander e-mailadres zonder de beheerder zelf uit te loggen.
-  // Bij een nieuw account sturen we daarna zelf de wachtwoord-instel-mail - dat is een
-  // gewone publieke Firebase Auth-aanroep, geen extra infrastructuur nodig.
+  // Zolang het account nog geen wachtwoord heeft sturen we daarna zelf de wachtwoord-instel-
+  // mail - ook als het account al bestond (bv. een eerdere poging waarbij het aanmaken wél
+  // lukte maar de mail toen niet aankwam) - dat is een gewone publieke Firebase Auth-aanroep,
+  // geen extra infrastructuur nodig.
   async function addCoach(teamId) {
     const email = (coachEmailByTeam[teamId] || '').trim();
     if (!email) { setCoachErrorByTeam(m => ({ ...m, [teamId]: 'Vul een e-mailadres in.' })); return; }
@@ -518,7 +533,7 @@ export default function App() {
       const call = httpsCallable(functions, 'addCoachToTeam');
       const role = coachRoleByTeam[teamId] || 'coach';
       const res = await call({ email, teamId, role });
-      if (res.data && res.data.created) {
+      if (res.data && !res.data.hasPassword) {
         await sendPasswordResetEmail(auth, email);
       }
       setCoachEmailByTeam(m => ({ ...m, [teamId]: '' }));
@@ -530,11 +545,20 @@ export default function App() {
   }
 
   // Loskoppelen is een gewone Firestore-write (geen nieuw account, geen Auth-actie nodig),
-  // dus dat kan direct vanuit de client - beheerders mogen users/{uid} schrijven.
+  // dus dat kan direct vanuit de client - beheerders mogen users/{uid} schrijven. Verwijdert
+  // alleen dit ene team uit de teams-kaart (iemand kan aan meerdere teams gekoppeld zijn); een
+  // niet-gemigreerd account (nog met het oude losse teamId/role-veld) wordt hier meteen
+  // meegenomen naar de nieuwe vorm i.p.v. per ongeluk gekoppeld te blijven via dat oude veld.
   async function unlinkCoach(uid, teamId) {
     setCoachErrorByTeam(m => ({ ...m, [teamId]: '' }));
     try {
-      await setDoc(doc(db, 'users', uid), { teamId: null }, { merge: true });
+      const u = allUsers.find(x => x.uid === uid) || {};
+      const patch = { [`teams.${teamId}`]: deleteField() };
+      if (u.teamId === teamId && u.role !== 'admin') {
+        patch.teamId = deleteField();
+        patch.role = deleteField();
+      }
+      await setDoc(doc(db, 'users', uid), patch, { merge: true });
     } catch (e) {
       setCoachErrorByTeam(m => ({ ...m, [teamId]: e.message || 'Loskoppelen mislukt.' }));
     }
@@ -814,7 +838,7 @@ export default function App() {
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
-  const visibleTeams = isAdmin ? teams : (myTeamId ? teams.filter(t => t.id === myTeamId) : []);
+  const visibleTeams = isAdmin ? teams : teams.filter(t => myTeams && myTeams[t.id]);
   // Wedstrijdschema, Strafcorner, Historie, Afspraken en Teams zijn alleen zinvol voor wie
   // ingelogd is (de inhoud erachter is toch afgeschermd tot het eigen team / adminrechten) -
   // een anonieme bezoeker krijgt deze items daarom niet eens in het menu te zien. Ouders is
@@ -824,7 +848,7 @@ export default function App() {
   // Een manager (niet-admin) is geen coach-lid van het team en krijgt dus dezelfde tabs te zien
   // als een uitgelogde bezoeker (Programma, Standen, Team, Ouders) - alleen bij Ouders heeft hij
   // via canManageOuders daadwerkelijk bewerkrechten, de rest zou toch alleen de accessGate tonen.
-  const managerOnly = !!user && role === 'manager' && !isAdmin;
+  const managerOnly = !!user && myRoleForCurrentTeam === 'manager' && !isAdmin;
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
@@ -2376,7 +2400,7 @@ export default function App() {
                 </p>
               </div>
               {teams.map(t => {
-                const coaches = allUsers.filter(u => u.teamId === t.id);
+                const coaches = allUsers.filter(u => teamsOf(u)[t.id]).map(u => ({ ...u, teamRole: teamsOf(u)[t.id] }));
                 return (
                   <div key={t.id} className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
                     <div className="card-title">{t.name}</div>
@@ -2384,13 +2408,13 @@ export default function App() {
                       <div style={css('display:flex;flex-direction:column;gap:6px')}>
                         {coaches.map(c => (
                           <div key={c.uid} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:15px')}>
-                            <span>{c.email}{c.role && c.role !== 'coach' ? ` · ${c.role}` : ''}</span>
+                            <span>{c.email} · {c.role === 'admin' ? 'admin' : c.teamRole === 'manager' ? 'manager' : 'coach'}</span>
                             <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={() => unlinkCoach(c.uid, t.id)}>Loskoppelen</button>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <p className="card-body" style={css('margin:0')}>Nog geen coaches gekoppeld.</p>
+                      <p className="card-body" style={css('margin:0')}>Nog geen coaches/managers gekoppeld.</p>
                     )}
                     <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
                       <div className="field" style={css('margin:0;flex:1;min-width:200px')}>
@@ -2495,7 +2519,7 @@ export default function App() {
           <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
             {allUsers.map(u => {
               const open = expandedUserUid === u.uid;
-              const teamName = u.role === 'admin' ? 'Beheerder' : ((teams.find(t => t.id === u.teamId) || {}).name || '—');
+              const teamName = u.role === 'admin' ? 'Beheerder' : (Object.keys(teamsOf(u)).map(tid => (teams.find(t => t.id === tid) || {}).name).filter(Boolean).join(', ') || '—');
               const panelId = `logins-${u.uid}`;
               return (
                 <div key={u.uid} className="card elev-sm" style={css('padding:0;overflow:hidden')}>

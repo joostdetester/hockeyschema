@@ -22,7 +22,13 @@ function slugify(name) {
 }
 
 export function TeamProvider({ children }) {
-  const { myTeamId } = useAuth();
+  const { myTeams } = useAuth();
+  // Iemand kan aan meerdere teams gekoppeld zijn - bij inloggen kiezen we er hier één als
+  // startpunt (de eerste in de kaart); wisselen naar een ander eigen team kan daarna gewoon
+  // via het team-dropdown. Vastgelegd als losse string i.p.v. rechtstreeks op het myTeams-
+  // object te depend'en, want dat is een nieuw object bij elke snapshot (ook wanneer de
+  // inhoud niet wijzigt) en zou dit effect dan onnodig vaak laten terugspringen.
+  const firstMyTeamId = (myTeams && Object.keys(myTeams)[0]) || null;
   const [teams, setTeams] = useState([]);
   const [teamsLoaded, setTeamsLoaded] = useState(false);
   const [currentTeamId, setCurrentTeamId] = useState(null);
@@ -60,8 +66,8 @@ export function TeamProvider({ children }) {
 
   // Bij inloggen automatisch naar het eigen team wisselen.
   useEffect(() => {
-    if (myTeamId) setCurrentTeamId(myTeamId);
-  }, [myTeamId]);
+    if (firstMyTeamId) setCurrentTeamId(firstMyTeamId);
+  }, [firstMyTeamId]);
 
   async function setDefaultTeam(teamId) {
     await setDoc(doc(db, 'settings', 'app'), { defaultTeamId: teamId });

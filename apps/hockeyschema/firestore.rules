@@ -3,10 +3,18 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function isAdmin() { return request.auth != null && me().role == 'admin'; }
+    // A coach/manager can belong to several teams at once, each with its own role, stored in
+    // the `teams` map. Falls back to the legacy single teamId/role pair for an account not yet
+    // touched by the current addCoachToTeam (which migrates a doc to the map shape the next
+    // time it's (re)linked to a team).
+    function roleFor(teamId) {
+      return ('teams' in me()) && (teamId in me().teams) ? me().teams[teamId]
+        : (me().teamId == teamId ? me().role : null);
+    }
     // isTeamMember: coach (or admin) of this team - deliberately excludes 'manager', who only
     // gets the narrower write rule below on state/public (fixtures, for the Ouders indeling).
-    function isTeamMember(teamId) { return request.auth != null && ((me().teamId == teamId && me().role != 'manager') || isAdmin()); }
-    function isManager(teamId) { return request.auth != null && me().teamId == teamId && me().role == 'manager'; }
+    function isTeamMember(teamId) { return request.auth != null && ((roleFor(teamId) != null && roleFor(teamId) != 'manager') || isAdmin()); }
+    function isManager(teamId) { return request.auth != null && roleFor(teamId) == 'manager'; }
 
     match /teams/{teamId} {
       allow read: if true;

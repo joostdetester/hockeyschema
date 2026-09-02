@@ -9,7 +9,10 @@ const AuthCtx = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [myTeamId, setMyTeamId] = useState(null);
+  // myTeams: { [teamId]: 'coach' | 'manager' } - a coach/manager can belong to several teams
+  // at once, each with its own role. `role` stays a separate, global field - it's only ever
+  // 'admin' (an admin isn't tied to any one team, so it doesn't belong in this per-team map).
+  const [myTeams, setMyTeams] = useState({});
   const [role, setRole] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
@@ -17,16 +20,23 @@ export function AuthProvider({ children }) {
     return onAuthStateChanged(auth, u => {
       setUser(u);
       setAuthLoading(false);
-      if (!u) { setMyTeamId(null); setRole(null); }
+      if (!u) { setMyTeams({}); setRole(null); }
     });
   }, []);
 
   useEffect(() => {
     if (!user) return;
     return onSnapshot(doc(db, 'users', user.uid), snap => {
-      const d = snap.data();
-      setMyTeamId(d?.teamId || null);
-      setRole(d?.role || null);
+      const d = snap.data() || {};
+      // Backward compat: a doc not yet touched by the current addCoachToTeam still has the
+      // old single teamId/role pair instead of the teams map - treat that as a one-entry map.
+      // It self-heals to the map shape the next time this account is (re)linked to a team.
+      let teams = d.teams || {};
+      if (!Object.keys(teams).length && d.teamId && d.role && d.role !== 'admin') {
+        teams = { [d.teamId]: d.role };
+      }
+      setMyTeams(teams);
+      setRole(d.role === 'admin' ? 'admin' : null);
     });
   }, [user]);
 
@@ -49,7 +59,7 @@ export function AuthProvider({ children }) {
   const isAdmin = role === 'admin';
 
   return (
-    <AuthCtx.Provider value={{ user, myTeamId, role, isAdmin, authLoading, login, logout }}>
+    <AuthCtx.Provider value={{ user, myTeams, role, isAdmin, authLoading, login, logout }}>
       {children}
     </AuthCtx.Provider>
   );
