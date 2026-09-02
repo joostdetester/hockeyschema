@@ -40,6 +40,15 @@ const FILL_ORDER = ['SP', 'MM', 'VS', 'LM', 'RV', 'RH', 'RA', 'LV', 'LH', 'LA'];
 const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['LA', 'VS', 'RA'], ['LM']];
 const ZONE_W = { as: 1.0, rechts: 0.6, links: 0.3 };
 const QUARTER_MIN = 17.5;
+// Aftelklok in wedstrijdmodus: telt een kwart af en waarschuwt 1 minuut vóór de helft van het
+// kwart (het moment waarop meestal binnen het speelblok gewisseld wordt), zodat de meiden
+// daar tijdig van op de hoogte gebracht kunnen worden.
+const TIMER_TOTAL_MS = Math.round(QUARTER_MIN * 60 * 1000);
+const TIMER_ALERT_REMAINING_MS = TIMER_TOTAL_MS - Math.round((QUARTER_MIN / 2 - 1) * 60 * 1000);
+// Live wedstrijdvolgen: de klok per kwart leeft in m.clocks (Firestore-gesynchroniseerd, dus
+// voor iedereen live zichtbaar) i.p.v. lokale state - dit is de standaardwaarde voor een kwart
+// dat nog niet is aangeraakt.
+const DEFAULT_CLOCK = { running: false, endAt: null, remainingMs: TIMER_TOTAL_MS };
 
 const DEFAULT_PLAYERS = [
   ['Babette', 'van Dijk', { LA: 2, RA: 1 }],
@@ -394,8 +403,46 @@ export default function App() {
   const [standingsBusy, setStandingsBusy] = useState(false);
   const [standingsError, setStandingsError] = useState('');
   const [selectedPouleId, setSelectedPouleId] = useState(null);
+  // Los van selectedPouleId (dat is specifiek voor de Standen-tabel/importlabel): dit filtert
+  // de wedstrijdenlijst op Programma zelf, en kan behalve een echte competitie ook
+  // 'friendly' (oefenwedstrijden) of 'all' (alles) zijn.
+  const [programmaCompetitionFilter, setProgrammaCompetitionFilter] = useState(null);
   const [showPastOuders, setShowPastOuders] = useState(false);
   const [showPastFixtures, setShowPastFixtures] = useState(false);
+  // Wedstrijdmodus: compacte weergave voor tijdens de wedstrijd (alleen coaches, zie isMyTeam
+  // hieronder) i.p.v. de volledige pagina. Blijft aan staan na een ververs (bijv. verbinding
+  // verloren tijdens de wedstrijd) door de keuze in localStorage te bewaren i.p.v. alleen in
+  // React state. Dit is puur of de coach zélf de compacte weergave open heeft staan op zijn eigen
+  // toestel - los van m.liveOpened hieronder (de "Start wedstrijd"-schakelaar die de Live-pagina
+  // voor iedereen zichtbaar maakt).
+  const [matchMode, setMatchMode] = useState(() => {
+    try { return window.localStorage.getItem('hockeyschema.matchMode') === '1'; } catch { return false; }
+  });
+  // Puur lokale tik voor het live aftellen (elke kijker rekent zelf door op basis van het
+  // gesynchroniseerde endAt-tijdstip in m.clocks - zie hieronder) - wordt nooit weggeschreven.
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  // Het wisselsignaal (1 min voor de helft van een kwart) is puur een sideline-cue op het eigen
+  // toestel van de coach, dus lokaal en per kwart-index bijgehouden - anders zou het wegklikken
+  // van het signaal in kwart 1 het signaal in kwart 3 ook onterecht onderdrukken.
+  const [alertDismissedByQuarter, setAlertDismissedByQuarter] = useState({});
+  const [scorerPicker, setScorerPicker] = useState(false);
+  const [goalRemark, setGoalRemark] = useState('');
+  const [themGoalDialog, setThemGoalDialog] = useState(false);
+  const [commentDialog, setCommentDialog] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  // Gedeeld door de "wie scoorde"/"tegenstander scoort"/"extra commentaar"-dialogen - er staat
+  // er nooit meer dan één tegelijk open, dus één stukje state volstaat. Wordt bij het openen van
+  // een dialoog gezet op de op dat moment verstreken speeltijd, maar blijft door de coach
+  // aanpasbaar (bv. een doelpunt dat pas 5 minuten later wordt ingevoerd).
+  const [minuteInput, setMinuteInput] = useState('');
+  const [endMatchConfirm, setEndMatchConfirm] = useState(false);
+  const [manualClockInput, setManualClockInput] = useState('');
+  const [expandedReportId, setExpandedReportId] = useState(null);
+  // Index (in m.goalLog) van de logregel die de coach nu aan het bewerken is, plus het
+  // bijbehorende bewerkformulier - null = geen bewerkdialoog open.
+  const [editEntryIdx, setEditEntryIdx] = useState(null);
+  const [editMinute, setEditMinute] = useState('');
+  const [editText, setEditText] = useState('');
   const migratedRef = useRef(false);
 
   // isMyTeam: ingelogd én (coach van het bekeken team, of gebruiker is admin) - een manager
@@ -668,6 +715,17 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    try { window.localStorage.setItem('hockeyschema.matchMode', matchMode ? '1' : '0'); } catch { /* localStorage niet beschikbaar */ }
+  }, [matchMode]);
+
+  function fmtTimer(ms) {
+    const total = Math.ceil(ms / 1000);
+    const mm = Math.floor(total / 60);
+    const ss = total % 60;
+    return mm + ':' + String(ss).padStart(2, '0');
+  }
+
   // Eenmalige migratie: zodra de eerste admin inlogt en er nog geen teams bestaan, wordt het
   // bestaande team (HCRB MO18-2) aangemaakt met wat er nu nog in localStorage staat.
   useEffect(() => {
@@ -859,15 +917,21 @@ export default function App() {
   // accessGate tonen.
   const limitedNav = !!user && !isMyTeam;
   const tabs = [
-    ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
+    ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
+    // Live: verschijnt voor IEDEREEN die dit team heeft geselecteerd (ook uitgelogd) zodra de
+    // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
+    // hier al kant-en-klaar door de filter hieronder.
+    ...(m.liveOpened ? [['live', 'Live']] : []),
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
   ].filter(t => t[0] === 'teams' ? !!user : ((user && !limitedNav) || !LOGGED_IN_ONLY_TABS.includes(t[0]))).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
-      + (tab === t[0]
-        ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600'
-        : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400')
+      + (t[0] === 'live'
+        ? 'color:#c23b3b;font-weight:700;' + (tab === t[0] ? 'border-bottom:3px solid #c23b3b' : 'border-bottom:3px solid transparent')
+        : (tab === t[0]
+          ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600'
+          : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400'))
   }));
 
   const sel = m.selected || [];
@@ -1130,6 +1194,8 @@ export default function App() {
     posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
+    dp: String(p.dp || 0),
+    onDp: e => { if (readOnly) return; const v = Math.max(0, Number(e.target.value) || 0); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, dp: v } : x)); },
     subLabel: p.sub ? 'Invaller' : 'Vast',
     onToggleSub: () => { if (readOnly) return; setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, sub: !x.sub } : x)); },
     cells: POS.map(pos => ({
@@ -1315,14 +1381,27 @@ export default function App() {
     .sort((a, b) => a.id - b.id);
   const currentPouleRow = standings.find(r => r.is_current);
   const currentPouleId = currentPouleRow ? currentPouleRow.poule_id : (poules.length ? poules[poules.length - 1].id : null);
+  const effectivePouleId = selectedPouleId != null ? selectedPouleId : currentPouleId;
+  // Standaard headertekst (buiten een live wedstrijd om): de eigen positie in de huidige
+  // competitie i.p.v. de eerstvolgende tegenstander - altijd op de actuele poule (currentPouleId),
+  // ongeacht welke poule er net op Standen is geselecteerd. Geen tekst als er nog geen stand is
+  // (bijv. geen LISA-koppeling) - net als bij "geen tegenstander" laten we 'm dan gewoon weg.
+  const ownStandingRow = standings.find(r => r.poule_id === currentPouleId && (r.name === lisaConfig?.teamName || r.name === ownTeamName));
+  const standingsLine = ownStandingRow
+    ? 'Plek ' + ownStandingRow.position + ' · ' + ownStandingRow.points + ' punten · ' + ownStandingRow.goals_for + ' doelpunten voor · ' + ownStandingRow.goals_against + ' tegen'
+    : null;
   // Korte notatie voor bij geïmporteerde wedstrijden (bv. "voorcompetitie 4e klasse" i.p.v.
   // de volledige "Meisjes O18 voorcompetitie 4e klasse") - de leeftijdscategorie staat er
   // sowieso al overal bij (teamnaam, header), dus die hoeft hier niet herhaald te worden.
-  const currentPouleName = currentPouleRow ? currentPouleRow.poule_name : (poules.length ? poules[poules.length - 1].name : null);
-  const competitionShortName = currentPouleName
-    ? currentPouleName.replace(/^(Meisjes|Jongens|Dames|Heren)\s+[A-Za-z]*\d+\s+/i, '').trim()
-    : null;
-  const effectivePouleId = selectedPouleId != null ? selectedPouleId : currentPouleId;
+  const shortPouleName = name => name ? name.replace(/^(Meisjes|Jongens|Dames|Heren)\s+[A-Za-z]*\d+\s+/i, '').trim() : null;
+  // Volgt de zelf gekozen competitie (effectivePouleId, ook gebruikt door Standen) i.p.v.
+  // altijd de LISA-"huidige" poule, zodat een handmatige keuze hier ook echt gebruikt wordt.
+  const effectivePouleName = (poules.find(p => p.id === effectivePouleId) || {}).name || null;
+  const competitionShortName = shortPouleName(effectivePouleName);
+  // Standaard dezelfde "huidige" competitie als effectivePouleId (of 'all' zolang er nog geen
+  // enkele poule bekend is) - los instelbaar van Standen, want hier kan ook op oefenwedstrijden
+  // of "alles" gefilterd worden, wat voor de standenpagina geen betekenis heeft.
+  const effectiveProgrammaFilter = programmaCompetitionFilter != null ? programmaCompetitionFilter : (currentPouleId != null ? currentPouleId : 'all');
   const pouleRows = standings
     .filter(r => r.poule_id === effectivePouleId)
     .slice()
@@ -1334,6 +1413,12 @@ export default function App() {
     const d = f.date ? new Date(f.date + 'T12:00:00') : null;
     const homeName = f.home ? ownTeamName : (f.opponent || 'tegenstander ?');
     const awayName = f.home ? (f.opponent || 'tegenstander ?') : ownTeamName;
+    const played = f.gf !== '' && f.gf != null && f.ga !== '' && f.ga != null;
+    // Live stand: alleen voor de wedstrijd die nu "gestart" is (m.liveOpened, via Wedstrijdmodus)
+    // en nog geen Eindstand heeft - zodra de coach naar een andere wedstrijd wisselt, de
+    // wedstrijd beëindigt (Eindstand wordt dan automatisch ingevuld) of de selectie wist,
+    // verdwijnt dit vanzelf weer.
+    const isLive = m.liveOpened && f.id === m.fixtureId && !played;
     return {
       key: f.id,
       date: f.date, time: f.time, opponent: f.opponent, home: !!f.home,
@@ -1342,7 +1427,8 @@ export default function App() {
       homeName, awayName,
       homeStyle: f.home ? 'color:var(--color-accent-700);font-weight:600' : 'color:var(--color-text)',
       awayStyle: !f.home ? 'color:var(--color-accent-700);font-weight:600' : 'color:var(--color-text)',
-      status: (f.gf !== '' && f.gf != null && f.ga !== '' && f.ga != null) ? 'gespeeld' : '—',
+      played,
+      live: isLive ? { home: f.home ? (m.liveUs || 0) : (m.liveThem || 0), away: f.home ? (m.liveThem || 0) : (m.liveUs || 0) } : null,
       onDate: e => upd({ date: e.target.value }),
       onTime: e => upd({ time: e.target.value }),
       onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
@@ -1364,11 +1450,25 @@ export default function App() {
       })(),
       planLabel: f.locked ? 'Bekijk schema' : 'Plan',
       plan: () => loadFixture(f),
-      remove: () => { if (!readOnly) setFixtures(fs => fs.filter(x => x.id !== f.id)); }
+      remove: () => { if (!readOnly) setFixtures(fs => fs.filter(x => x.id !== f.id)); },
+      // Wedstrijdverslag: alleen aanwezig voor wedstrijden die via "Wedstrijd beëindigen" in
+      // wedstrijdmodus zijn afgesloten - oudere/handmatige resultaten hebben dit niet.
+      report: f.report && f.report.length ? f.report : null,
     };
   });
-  const pastFixtureCount = fixtureRows.filter(f => f.status === 'gespeeld').length;
-  const visibleFixtureRows = showPastFixtures ? fixtureRows : fixtureRows.filter(f => f.status !== 'gespeeld');
+  // Filtert eerst op de gekozen competitie/type (zie effectiveProgrammaFilter hierboven),
+  // daarna pas op gespeeld/nog te spelen - zodat "Ook X gespeelde wedstrijden tonen" het
+  // aantal binnen de huidige filter toont, niet het seizoentotaal.
+  const competitionFilteredFixtureRows = fixtureRows.filter(f => {
+    if (effectiveProgrammaFilter === 'all') return true;
+    if (effectiveProgrammaFilter === 'friendly') return f.friendly;
+    // f.type is al 'Oefenwedstrijd' of de opgeslagen competitienaam (zie fixtureRows hierboven) -
+    // vergelijk daarmee i.p.v. een apart f.competitie-veld dat niet op de rij zelf staat.
+    const shortName = shortPouleName((poules.find(p => p.id === effectiveProgrammaFilter) || {}).name);
+    return !f.friendly && shortName != null && f.type === shortName;
+  });
+  const pastFixtureCount = competitionFilteredFixtureRows.filter(f => f.played).length;
+  const visibleFixtureRows = showPastFixtures ? competitionFilteredFixtureRows : competitionFilteredFixtureRows.filter(f => !f.played);
 
   const RIJDER_SLOTS = 4;
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -1443,9 +1543,82 @@ export default function App() {
     return fx && fx.home === false ? opp + ' – ' + ownTeamName : ownTeamName + ' – ' + opp;
   })();
 
-  const dateline = (m.opponent ? 'tegen ' + m.opponent : 'geen tegenstander') + ' · 4 × ' + QUARTER_MIN + ' min';
+  const dateline = 'tegen ' + m.opponent + ' · 4 × ' + QUARTER_MIN + ' min';
   const scoreFxObj = fixtures.find(x => x.id === m.fixtureId);
   const matchDateTimeLine = scheduleTitle + (m.date ? ' · ' + nlDate(m.date) : '') + (scoreFxObj && scoreFxObj.time ? ' ' + scoreFxObj.time : '');
+
+  // Live wedstrijdvolgen: de klok leeft per kwart in m.clocks (Firestore-gesynchroniseerd via de
+  // gewone match-blob-sync), zodat hij voor IEDERE kijker meetikt, niet alleen op het toestel van
+  // de coach. Elk kwart heeft een eigen "vakje" zodat even terugbladeren naar een vorig kwart
+  // (om het schema/strafcorner na te kijken) de lopende klok van het huidige kwart niet verstoort.
+  const liveQuarter = Number(m.liveQuarter || 0);
+  const activeClockKey = String(liveQuarter);
+  const activeClock = (m.clocks && m.clocks[activeClockKey]) || DEFAULT_CLOCK;
+  const timerRemainingMs = activeClock.running
+    ? Math.max(0, (activeClock.endAt || timerNow) - timerNow)
+    : activeClock.remainingMs;
+  const timerAlertActive = !alertDismissedByQuarter[activeClockKey] && timerRemainingMs <= TIMER_ALERT_REMAINING_MS;
+
+  // Tikt elke 250ms door zolang de actieve klok loopt, puur om timerNow te verversen — de
+  // daadwerkelijke resterende tijd wordt berekend uit endAt (een tijdstip), niet opgeteld in
+  // stapjes. Moet voor IEDERE kijker lopen (niet alleen de coach), anders tikt de klok bij
+  // ouders/spectators niet live mee.
+  useEffect(() => {
+    if (!activeClock.running) return;
+    const id = setInterval(() => setTimerNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [activeClock.running]);
+
+  // Bevriest de klok op 0 zodra hij afloopt. Alleen de coach (isMyTeam) mag dit daadwerkelijk
+  // wegschrijven - anders zou elke open kijker-tab tegelijk dezelfde write proberen te doen
+  // zodra de klok voor hen ook op 0 komt (onschadelijk dankzij de Firestore-rules, maar ruis).
+  useEffect(() => {
+    if (isMyTeam && activeClock.running && timerRemainingMs <= 0) {
+      patchMatch({ clocks: { ...(m.clocks || {}), [activeClockKey]: { running: false, endAt: null, remainingMs: 0 } } });
+    }
+  }, [isMyTeam, activeClock.running, timerRemainingMs, activeClockKey]);
+
+  function timerStart() {
+    const slot = (m.clocks || {})[activeClockKey] || DEFAULT_CLOCK;
+    if (slot.running) return;
+    patchMatch({
+      clocks: { ...(m.clocks || {}), [activeClockKey]: { running: true, endAt: Date.now() + (slot.remainingMs > 0 ? slot.remainingMs : TIMER_TOTAL_MS), remainingMs: slot.remainingMs } },
+      ...(m.liveMatchStarted ? {} : { liveMatchStarted: true }),
+    });
+  }
+  function timerPause() {
+    const slot = (m.clocks || {})[activeClockKey] || DEFAULT_CLOCK;
+    if (!slot.running) return;
+    patchMatch({ clocks: { ...(m.clocks || {}), [activeClockKey]: { running: false, endAt: null, remainingMs: Math.max(0, (slot.endAt || Date.now()) - Date.now()) } } });
+  }
+  function timerReset() {
+    patchMatch({ clocks: { ...(m.clocks || {}), [activeClockKey]: { running: false, endAt: null, remainingMs: TIMER_TOTAL_MS } } });
+    setAlertDismissedByQuarter(a => ({ ...a, [activeClockKey]: false }));
+  }
+  function timerSetManual(mm, ss) {
+    const remainingMs = Math.max(0, (Number(mm) * 60 + Number(ss)) * 1000);
+    patchMatch({ clocks: { ...(m.clocks || {}), [activeClockKey]: { running: false, endAt: null, remainingMs } } });
+  }
+  function timerDismissAlert() {
+    setAlertDismissedByQuarter(a => ({ ...a, [activeClockKey]: true }));
+  }
+
+  // Score in dezelfde thuis/uit-volgorde als scheduleTitle (consistent met hoe Eindstand/gf/ga
+  // elders al wordt gelezen).
+  function liveScoreText() {
+    const home = !(scoreFxObj && scoreFxObj.home === false);
+    const us = m.liveUs || 0;
+    const them = m.liveThem || 0;
+    return (home ? us : them) + '–' + (home ? them : us);
+  }
+  // Eén gedeelde bron voor de tussenstand/eindstand-tekst - gebruikt door zowel de header (voor
+  // iedereen, op elk tabblad) als de Live-pagina, zodat de logica niet dubbel hoeft te staan.
+  function liveStatus() {
+    if (!m.liveOpened) return null;
+    if (!m.liveMatchStarted) return { label: null, line: 'De wedstrijd zal binnenkort starten.' };
+    if (m.liveEnded) return { label: 'Eindstand', line: scheduleTitle + ' · ' + liveScoreText() };
+    return { label: 'Tussenstand', line: scheduleTitle + ' · ' + liveScoreText() + ' · Kwart ' + (liveQuarter + 1) + ' · ' + fmtTimer(timerRemainingMs) };
+  }
   const vastePlayers = players.filter(p => !p.sub);
   const invallerPlayers = players.filter(p => p.sub);
   const chipFor = id => selectionChips.find(c => c.key === id);
@@ -1470,6 +1643,444 @@ export default function App() {
       </div>
     </main>
   );
+
+  // Als losse variabelen opgebouwd (i.p.v. inline in de JSX) zodat dezelfde overlay-dialogen
+  // (klikken op een naam om te wisselen/verplaatsen) zowel in de normale Wedstrijdschema-sectie
+  // als in de compacte wedstrijdmodus-weergave hergebruikt kunnen worden.
+  const positionEditorDialog = editor && (
+    <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
+      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
+        <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{editor.title}</div>
+        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+          <div style={css('display:flex;gap:var(--space-2)')}>
+            {editor.halfTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+          </div>
+          <div style={css('font-size:16px')}>Nu op deze plek: <strong>{editor.current}</strong></div>
+          <div style={css('display:flex;flex-direction:column;gap:5px')}>
+            {editor.options.map(o => (
+              <button key={o.key} type="button" onClick={o.apply} style={css(o.style)}>
+                <span style={css('font-size:17px;font-weight:500')}>{o.name}</span>
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>{o.meta}</span>
+                <span style={css('font-size:14px;color:var(--color-accent-2-700)')}>{o.effect}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={editor.close}>Annuleren</button></div>
+      </div>
+    </div>
+  );
+  const positionRelocatorDialog = relocator && (
+    <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
+      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
+        <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{relocator.title}</div>
+        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+          <div style={css('font-size:16px;color:var(--color-neutral-700);text-wrap:pretty')}>{relocator.intro}</div>
+          <div style={css('display:flex;flex-direction:column;gap:5px')}>
+            {relocator.options.map(o => (
+              <button key={o.key} type="button" onClick={o.apply} style={css(o.style)}>
+                <span style={css('font-size:17px;font-weight:500')}>{o.name}</span>
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>{o.meta}</span>
+                <span style={css('font-size:14px;color:var(--color-accent-2-700)')}>{o.effect}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={relocator.close}>Op de bank laten</button></div>
+      </div>
+    </div>
+  );
+  // Zelfde kaart-opmaak als de kwart-kaarten in de normale Wedstrijdschema-sectie (en op de
+  // printversie), maar los getrokken zodat de compacte wedstrijdmodus 'm kan hergebruiken zonder
+  // de print-specifieke data-noprint/data-pagebreak-opmaak.
+  const halfCard = h => (
+    <article key={h.key} data-halfcard="1" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+      <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-2);border-bottom:2px solid var(--color-text);padding-bottom:4px')}>
+        <h3 style={css('font-family:var(--font-heading);font-size:21px;margin:0;font-weight:600;white-space:nowrap')}>{h.title}</h3>
+        <span style={css('font-size:13px;color:var(--color-neutral-700);letter-spacing:0.06em')}>{h.time}</span>
+      </div>
+      <div style={css('display:flex;flex-direction:column;gap:6px;padding-top:2px')}>
+        {h.rows.map(row => (
+          <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
+            {row.cells.map(cell => (
+              <div key={cell.key} data-poscell="1" style={css(cell.style)}>
+                <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
+                <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
+                <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={css('display:flex;flex-direction:column;gap:5px;padding-top:8px;font-size:15px')}>
+        {h.notes.map(n => (
+          <div key={n.key} style={css(n.style)}>
+            <div style={css('letter-spacing:0.1em;text-transform:uppercase;font-size:11px;color:var(--color-neutral-700)')}>{n.label}</div>
+            <div style={css('line-height:1.35;text-wrap:pretty')}>{n.text}</div>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+  const scBlockTable = rows => (
+    <table className="table" data-keeptogether="1">
+      <thead>
+        <tr><th style={{ textAlign: 'left' }}>Speelblok</th><th style={{ textAlign: 'left' }}>Verdedigen</th><th style={{ textAlign: 'left' }}>Aanval</th></tr>
+      </thead>
+      <tbody>
+        {rows.map(r => (
+          <tr key={r.key}>
+            <td style={{ textAlign: 'left' }}>{r.label}</td>
+            <td style={{ textAlign: 'left' }}>
+              {r.verdedigen.map(x => (
+                <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
+              ))}
+            </td>
+            <td style={{ textAlign: 'left' }}>
+              {r.aanval.map(x => (
+                <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
+              ))}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+
+  // Verstreken speeltijd sinds de aftrap (over alle kwarten heen, i.p.v. alleen dit kwart) - voor
+  // het loggen van "in de Ne minuut" bij een doelpunt. Minimaal 1, en naar boven afgerond (zoals
+  // gebruikelijk bij "doelpunt in de 14e minuut").
+  function elapsedMatchMinutes() {
+    const elapsedInQuarter = QUARTER_MIN - (timerRemainingMs / 60000);
+    return Math.max(1, Math.ceil(liveQuarter * QUARTER_MIN + elapsedInQuarter));
+  }
+  // Alle drie nemen de minuut als expliciete parameter aan (i.p.v. 'm zelf te berekenen) - de
+  // dialogen zetten 'm bij het openen op de huidige verstreken tijd, maar de coach kan 'm
+  // aanpassen (bv. een doelpunt dat pas 5 minuten later wordt ingevoerd).
+  function logGoalThem(minute) {
+    const newThem = (m.liveThem || 0) + 1;
+    patchMatch({ liveThem: newThem, goalLog: [...(m.goalLog || []), { team: 'them', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), atUs: m.liveUs || 0, atThem: newThem }] });
+    setThemGoalDialog(false);
+  }
+  function logGoalUs(player, remark, minute) {
+    const newUs = (m.liveUs || 0) + 1;
+    const entry = { team: 'us', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), scorerId: player.id, scorerName: displayFirst(player), atUs: newUs, atThem: m.liveThem || 0 };
+    if (remark && remark.trim()) entry.remark = remark.trim();
+    patchMatch({ liveUs: newUs, goalLog: [...(m.goalLog || []), entry] });
+    setPlayers(ps => ps.map(x => x.id === player.id ? { ...x, dp: (x.dp || 0) + 1 } : x));
+    setScorerPicker(false);
+    setGoalRemark('');
+  }
+  function logNote(text, minute) {
+    if (!text || !text.trim()) return;
+    patchMatch({ goalLog: [...(m.goalLog || []), { team: 'note', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), text: text.trim() }] });
+    setCommentText('');
+    setCommentDialog(false);
+  }
+  // Verwijdert één specifieke logregel (op index, dus altijd de actuele m.goalLog op het moment
+  // van klikken) en trekt score/DP weer terug - gebruikt door zowel de snelle "−" (laatste van
+  // dit team) als het bewerken/verwijderen van een willekeurige regel in het scoreverloop.
+  function removeLogEntry(idx) {
+    const log = m.goalLog || [];
+    const entry = log[idx];
+    if (!entry) return;
+    const newLog = log.slice(0, idx).concat(log.slice(idx + 1));
+    const patch = { goalLog: newLog };
+    if (entry.team === 'us') patch.liveUs = Math.max(0, (m.liveUs || 0) - 1);
+    else if (entry.team === 'them') patch.liveThem = Math.max(0, (m.liveThem || 0) - 1);
+    patchMatch(patch);
+    if (entry.team === 'us' && entry.scorerId) {
+      setPlayers(ps => ps.map(x => x.id === entry.scorerId ? { ...x, dp: Math.max(0, (x.dp || 0) - 1) } : x));
+    }
+  }
+  function updateLogEntry(idx, changes) {
+    patchMatch({ goalLog: (m.goalLog || []).map((e, i) => i === idx ? { ...e, ...changes } : e) });
+  }
+  // Eén gedeelde tekst-opmaak voor een logregel (doelpunt of commentaar), zodat zowel de
+  // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
+  // afgelopen wedstrijd, via de wedstrijd zelf) dezelfde regel tonen — daarom home/opponentName
+  // als losse parameters i.p.v. rechtstreeks scoreFxObj/m te gebruiken.
+  function formatMatchLogEntry(g, home, opponentName) {
+    if (g.team === 'note') return g.minute + 'e minuut: ' + g.text;
+    const first = home ? g.atUs : g.atThem;
+    const second = home ? g.atThem : g.atUs;
+    if (g.team === 'us') {
+      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
+    }
+    return g.minute + 'e minuut: ' + opponentName + ' scoort — ' + first + '–' + second;
+  }
+  // "−" corrigeert een misklik: verwijdert de laatste logregel van DIT team (zodat een verkeerd
+  // toegekend doelpunt van de tegenstander corrigeren het eigen scoreverloop niet doorelkaar
+  // haalt) via removeLogEntry hierboven.
+  function undoLastGoal(team) {
+    const log = m.goalLog || [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (log[i].team === team) { removeLogEntry(i); return; }
+    }
+    patchMatch(team === 'us' ? { liveUs: Math.max(0, (m.liveUs || 0) - 1) } : { liveThem: Math.max(0, (m.liveThem || 0) - 1) });
+  }
+  function endMatch() {
+    patchMatch({ liveEnded: true });
+    if (scoreFxObj) {
+      // Het wedstrijdverslag wordt op de wedstrijd zelf bewaard (niet op het tijdelijke
+      // match-object) zodat het blijft bestaan ook als de coach later een heel andere wedstrijd
+      // in wedstrijdmodus opent - Wedstrijdverslagen leest straks rechtstreeks uit fixtures.
+      setFixtures(fs => fs.map(f => f.id === scoreFxObj.id
+        ? { ...f, gf: String(f.home ? (m.liveUs || 0) : (m.liveThem || 0)), ga: String(f.home ? (m.liveThem || 0) : (m.liveUs || 0)), report: m.goalLog || [] }
+        : f));
+    }
+    setEndMatchConfirm(false);
+  }
+
+  // Wedstrijdmodus-inhoud: geen eigen header/toggle meer (die zit nu vast in de app-header, zie
+  // hieronder) - dit is puur de sectie die de navigatiebalk + tabinhoud vervangt.
+  let matchModeContent = null;
+  if (matchMode && isMyTeam) {
+    const qHalf = halves[liveQuarter];
+    const qScRows = scBlockRows.slice(2 * liveQuarter, 2 * liveQuarter + 2);
+    // Zelfde thuis/uit-conventie als scheduleTitle hierboven: zonder gekoppelde wedstrijd staat
+    // het eigen team standaard vooraan (thuis).
+    const homeIsUs = !(scoreFxObj && scoreFxObj.home === false);
+    const opponentName = m.opponent || (scoreFxObj && scoreFxObj.opponent) || 'Tegenstander';
+    const liveHomeName = homeIsUs ? ownTeamName : opponentName;
+    const liveAwayName = homeIsUs ? opponentName : ownTeamName;
+    const liveCounters = [
+      { key: 'home', name: liveHomeName, isUs: homeIsUs },
+      { key: 'away', name: liveAwayName, isUs: !homeIsUs },
+    ];
+    const scorerOptions = players.filter(p => (m.selected || []).includes(p.id));
+    const manualMatch = /^(\d{1,2}):(\d{2})$/.exec(manualClockInput.trim());
+
+    matchModeContent = (
+      <main style={css('padding-top:var(--space-6);display:flex;justify-content:center')}>
+        <div style={css('display:flex;flex-direction:column;gap:var(--space-3);width:100%;max-width:640px')}>
+
+          <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:15px;cursor:pointer')}>
+            <input type="checkbox" checked={!!m.liveOpened} onChange={e => patchMatch({ liveOpened: e.target.checked })} />
+            <span>Start wedstrijd — maakt de Live-pagina zichtbaar voor iedereen die dit team heeft geselecteerd</span>
+          </label>
+
+          {/* Klok, live stand, kwart-keuze en commentaar/beëindigen zijn pas te bedienen zodra
+              "Start wedstrijd" is aangevinkt - anders zou de coach kunnen scoren/de klok kunnen
+              starten zonder dat dit voor wie dan ook live zichtbaar is. */}
+          {!m.liveOpened && (
+            <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700)')}>Vink hierboven Start wedstrijd aan om de klok, live stand en commentaar te gebruiken.</p>
+          )}
+          <div style={css(m.liveOpened ? '' : 'opacity:0.45;pointer-events:none')}>
+          <div style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+
+          <div className="card elev-md" style={css('padding:var(--space-2) var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)')}>
+              <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Aftelklok kwart · 17:30</span>
+              <span style={css('font-family:var(--font-heading);font-size:40px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1')}>{fmtTimer(timerRemainingMs)}</span>
+            </div>
+            <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+              {activeClock.running
+                ? <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:120px')} onClick={timerPause}>Pauze</button>
+                : <button type="button" className="btn btn-primary" style={css('flex:1;min-width:120px')} onClick={timerStart}>Start</button>}
+              <button type="button" className="btn btn-ghost" onClick={timerReset}>Reset</button>
+            </div>
+            <div style={css('display:flex;align-items:center;gap:6px')}>
+              <span style={css('font-size:13px;color:var(--color-neutral-700)')}>Klok handmatig zetten (bv. na een ongewenste reset — linker veld = minuten, rechter veld = seconden):</span>
+              <input className="input" type="time" min="00:00" max="17:30" aria-label="Klok handmatig zetten — linker veld minuten, rechter veld seconden" style={css('padding:4px 6px')} value={manualClockInput} onChange={e => setManualClockInput(e.target.value)} />
+              <button type="button" className="btn btn-ghost" disabled={!manualMatch} onClick={() => { timerSetManual(manualMatch[1], manualMatch[2]); setManualClockInput(''); }}>Zet</button>
+            </div>
+            {timerAlertActive && (
+              <div style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--color-accent-2-100);color:var(--color-accent-2-800);font-weight:600;text-wrap:pretty')}>
+                <span className="blink-alert">🔔 Bijna halverwege — tijd om te wisselen</span>
+                <button type="button" className="btn btn-ghost" onClick={timerDismissAlert}>Zet uit</button>
+              </div>
+            )}
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-2) var(--space-4);display:flex;flex-direction:column;gap:6px')}>
+            <div style={css('display:flex;align-items:baseline;justify-content:space-between')}>
+              <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Live stand{m.liveEnded ? ' (afgesloten)' : ''}</span>
+              {!m.liveEnded && (
+                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={() => patchMatch({ liveUs: 0, liveThem: 0, goalLog: [] })}>Reset</button>
+              )}
+            </div>
+            <div style={css('display:flex;align-items:center;justify-content:space-around;gap:var(--space-3)')}>
+              {liveCounters.map(c => (
+                <div key={c.key} style={css('display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0')}>
+                  <span style={css('font-size:13px;font-weight:600;text-align:center;text-wrap:pretty')}>{c.name}</span>
+                  <div style={css('display:flex;align-items:center;gap:10px')}>
+                    {!m.liveEnded && (
+                      <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')} onClick={() => undoLastGoal(c.isUs ? 'us' : 'them')}>−</button>
+                    )}
+                    <span style={css('font-family:var(--font-heading);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;min-width:32px;text-align:center')}>{(c.isUs ? m.liveUs : m.liveThem) || 0}</span>
+                    {!m.liveEnded && (
+                      <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')}
+                        onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); if (c.isUs) { setGoalRemark(''); setScorerPicker(true); } else { setThemGoalDialog(true); } }}>+</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {scorerPicker && (
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setScorerPicker(false); setGoalRemark(''); }}>
+              <div className="dialog elev-lg" style={css('max-width:360px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Wie scoorde?</div>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:5px')}>
+                  <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
+                    Minuut
+                    <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
+                  </label>
+                  {scorerOptions.map(p => (
+                    <button key={p.id} type="button" className="btn btn-secondary" style={css('justify-content:flex-start')} onClick={() => logGoalUs(p, goalRemark, minuteInput)}>{displayFirst(p)}</button>
+                  ))}
+                  {!scorerOptions.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Geen speelsters geselecteerd voor deze wedstrijd.</p>}
+                  <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('margin-top:8px;min-height:60px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
+                </div>
+                <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={() => { setScorerPicker(false); setGoalRemark(''); }}>Annuleren</button></div>
+              </div>
+            </div>
+          )}
+
+          {themGoalDialog && (
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setThemGoalDialog(false)}>
+              <div className="dialog elev-lg" style={css('max-width:360px;width:100%;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Wanneer scoorde {opponentName}?</div>
+                <div className="dialog-body">
+                  <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
+                    Minuut
+                    <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} autoFocus />
+                  </label>
+                </div>
+                <div className="dialog-actions">
+                  <button type="button" className="btn btn-ghost" onClick={() => setThemGoalDialog(false)}>Annuleren</button>
+                  <button type="button" className="btn btn-primary" onClick={() => logGoalThem(minuteInput)}>Toevoegen</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {editEntryIdx !== null && (
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setEditEntryIdx(null)}>
+              <div className="dialog elev-lg" style={css('max-width:400px;width:100%;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Logregel bewerken</div>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                  <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
+                    Minuut
+                    <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={editMinute} onChange={e => setEditMinute(e.target.value)} />
+                  </label>
+                  {(m.goalLog[editEntryIdx].team === 'note' || m.goalLog[editEntryIdx].team === 'us') && (
+                    <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
+                  )}
+                </div>
+                <div className="dialog-actions" style={css('justify-content:space-between')}>
+                  <button type="button" className="btn btn-ghost" style={css('color:#c23b3b')} onClick={() => { removeLogEntry(editEntryIdx); setEditEntryIdx(null); }}>Verwijderen</button>
+                  <span style={css('display:flex;gap:var(--space-2)')}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setEditEntryIdx(null)}>Annuleren</button>
+                    <button type="button" className="btn btn-primary" onClick={() => {
+                      const entry = m.goalLog[editEntryIdx];
+                      const changes = { minute: Math.max(1, Number(editMinute) || entry.minute) };
+                      if (entry.team === 'note') changes.text = editText.trim();
+                      else if (entry.team === 'us') changes.remark = editText.trim() || undefined;
+                      updateLogEntry(editEntryIdx, changes);
+                      setEditEntryIdx(null);
+                    }}>Opslaan</button>
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <select className="input" aria-label="Kwart" style={css('font-size:16px;padding:8px 10px')} value={String(liveQuarter)} onChange={e => patchMatch({ liveQuarter: Number(e.target.value) })}>
+            <option value="0">Kwart 1</option>
+            <option value="1">Kwart 2</option>
+            <option value="2">Kwart 3</option>
+            <option value="3">Kwart 4</option>
+          </select>
+
+          {m.liveMatchStarted && !m.liveEnded && (
+            <button type="button" className="btn btn-secondary" onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); setCommentDialog(true); }}>Extra commentaar</button>
+          )}
+
+          {commentDialog && (
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setCommentDialog(false); setCommentText(''); }}>
+              <div className="dialog elev-lg" style={css('max-width:400px;width:100%;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Extra commentaar</div>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                  <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
+                    Minuut
+                    <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
+                  </label>
+                  <textarea className="input" placeholder="Bv. Speelster van Alphen krijgt rood" style={css('width:100%;min-height:80px;resize:vertical;font-family:inherit')} value={commentText} onChange={e => setCommentText(e.target.value)} autoFocus />
+                </div>
+                <div className="dialog-actions">
+                  <button type="button" className="btn btn-ghost" onClick={() => { setCommentDialog(false); setCommentText(''); }}>Annuleren</button>
+                  <button type="button" className="btn btn-primary" disabled={!commentText.trim()} onClick={() => logNote(commentText, minuteInput)}>Toevoegen</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {m.liveMatchStarted && !m.liveEnded && (
+            <button type="button" className="btn btn-secondary" onClick={() => setEndMatchConfirm(true)}>Wedstrijd beëindigen</button>
+          )}
+
+          {endMatchConfirm && (
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setEndMatchConfirm(false)}>
+              <div className="dialog elev-lg" style={css('max-width:400px;width:100%;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Wedstrijd beëindigen</div>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                  <p style={css('margin:0;font-size:16px')}>Klopt de eindstand {scheduleTitle} · {liveScoreText()}?</p>
+                  <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Deze stand wordt dan definitief ingevuld bij Programma.</p>
+                </div>
+                <div className="dialog-actions">
+                  <button type="button" className="btn btn-ghost" onClick={() => setEndMatchConfirm(false)}>Annuleren</button>
+                  <button type="button" className="btn btn-primary" onClick={endMatch}>Klopt, beëindigen</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          </div>
+          </div>
+
+          {!sched && (
+            <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700)')}>Nog geen schema opgeslagen voor deze wedstrijd — dat kan buiten wedstrijdmodus onder Wedstrijdschema.</p>
+          )}
+
+          {sched && qHalf && (
+            <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+              {halfCard(qHalf)}
+            </div>
+          )}
+
+          {sched && qHalf && (
+            <div style={css('display:flex;flex-direction:column;gap:4px')}>
+              <h3 style={css('font-family:var(--font-heading);font-size:17px;margin:0;font-weight:600')}>Strafcorner</h3>
+              {scBlockTable(qScRows)}
+            </div>
+          )}
+
+          {(m.goalLog || []).length > 0 && (
+            <div className="card elev-sm" style={css('padding:var(--space-2) var(--space-4);display:flex;flex-direction:column;gap:6px')}>
+              <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Scoreverloop</span>
+              <ul style={css('list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px')}>
+                {(m.goalLog || []).map((g, i) => (
+                  <li key={i} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:14px;padding:6px 10px;border-radius:var(--radius-md);background:var(--color-neutral-100)')}>
+                    <span style={css('text-wrap:pretty')}>{formatMatchLogEntry(g, !(scoreFxObj && scoreFxObj.home === false), opponentName)}</span>
+                    {!m.liveEnded && (
+                      <button type="button" className="btn btn-ghost" style={css('padding:2px 6px;font-size:13px;flex:0 0 auto')}
+                        onClick={() => { setEditEntryIdx(i); setEditMinute(String(g.minute)); setEditText(g.team === 'note' ? g.text : (g.remark || '')); }}>Bewerken</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {positionEditorDialog}
+          {positionRelocatorDialog}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div data-sheet="1" style={css('position:relative;z-index:0;min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
@@ -1498,26 +2109,47 @@ export default function App() {
                     {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
-                <div style={css('font-size:14px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>{dateline}</div>
+                {(liveStatus() || standingsLine || m.opponent) && (
+                  <div style={css('display:flex;flex-direction:column;gap:1px')}>
+                    {liveStatus() && liveStatus().label && (
+                      <span style={css('font-size:11px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:#c23b3b')}>{liveStatus().label}</span>
+                    )}
+                    <span style={css('font-size:14px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>
+                      {liveStatus() ? liveStatus().line : (standingsLine || dateline)}
+                    </span>
+                  </div>
+                )}
               </div>
-              {user ? (
-                <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:14px')}>
-                  <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : (myRoleForCurrentTeam ? ` · ${myRoleForCurrentTeam}` : '')}</span>
-                  <button type="button" className="btn btn-secondary" onClick={logout}>Uitloggen</button>
-                </div>
-              ) : (
-                <button type="button" className="btn btn-primary" onClick={() => setLoginOpen(true)}>Inloggen</button>
-              )}
+              <div style={css('display:flex;flex-direction:column;align-items:flex-end;gap:6px')}>
+                {isMyTeam && (
+                  <button type="button" className={matchMode ? 'btn btn-secondary' : 'btn btn-primary'} style={css('font-size:13px;padding:5px 10px')}
+                    onClick={() => setMatchMode(v => !v)}>{matchMode ? 'Wedstrijdmodus uit' : 'Wedstrijdmodus'}</button>
+                )}
+                {user ? (
+                  <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:14px')}>
+                    <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : (myRoleForCurrentTeam ? ` · ${myRoleForCurrentTeam}` : '')}</span>
+                    <button type="button" className="btn btn-secondary" onClick={logout}>Uitloggen</button>
+                  </div>
+                ) : (
+                  <button type="button" className="btn btn-primary" onClick={() => setLoginOpen(true)}>Inloggen</button>
+                )}
+              </div>
             </div>
           </div>
         </div>
-        <div style={css('height:1px;background:var(--color-text);margin-top:var(--space-1)')}></div>
-        <nav data-noprint="1" style={css('display:flex;gap:var(--space-4);padding-top:var(--space-1);flex-wrap:wrap')}>
-          {tabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
-        </nav>
+        {!(matchMode && isMyTeam) && (
+          <>
+            <div style={css('height:1px;background:var(--color-text);margin-top:var(--space-1)')}></div>
+            <nav data-noprint="1" style={css('display:flex;gap:var(--space-4);padding-top:var(--space-1);flex-wrap:wrap')}>
+              {tabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+            </nav>
+          </>
+        )}
       </header>
 
       {loginOpen && <Login onClose={() => setLoginOpen(false)} />}
+
+      {matchMode && isMyTeam ? matchModeContent : (<>
 
       {tab === 'wedstrijd' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-8)')}>
@@ -1528,7 +2160,15 @@ export default function App() {
               <label htmlFor="fx">Wedstrijd</label>
               <select className="input" id="fx" value={m.fixtureId || ''} onChange={e => {
                 const f = fixtures.find(x => x.id === e.target.value);
-                if (!f) { patchMatch({ fixtureId: '', opponent: '', date: '', selected: [], keeperId: '', keeper2Id: '', keeperSwitches: false, keepersPlayOut: false, schedule: null, injuries: {}, locked: false }); return; }
+                if (!f) {
+                  patchMatch({
+                    fixtureId: '', opponent: '', date: '', selected: [], keeperId: '', keeper2Id: '', keeperSwitches: false, keepersPlayOut: false, schedule: null, injuries: {}, locked: false,
+                    // Live-velden mee leegmaken - anders zou een uitgelogde bezoeker een verweesd
+                    // Live-tabblad kunnen blijven zien voor een wedstrijd die niet meer gekozen is.
+                    liveOpened: false, liveMatchStarted: false, liveEnded: false, liveQuarter: 0, clocks: {}, goalLog: [], liveUs: 0, liveThem: 0,
+                  });
+                  return;
+                }
                 loadFixture(f);
               }}>
                 <option value="">— kies een wedstrijd uit het programma —</option>
@@ -1725,50 +2365,9 @@ export default function App() {
                 </div>
               </div>
 
-              {editor && (
-                <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
-                  <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
-                    <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{editor.title}</div>
-                    <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
-                      <div style={css('display:flex;gap:var(--space-2)')}>
-                        {editor.halfTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
-                      </div>
-                      <div style={css('font-size:16px')}>Nu op deze plek: <strong>{editor.current}</strong></div>
-                      <div style={css('display:flex;flex-direction:column;gap:5px')}>
-                        {editor.options.map(o => (
-                          <button key={o.key} type="button" onClick={o.apply} style={css(o.style)}>
-                            <span style={css('font-size:17px;font-weight:500')}>{o.name}</span>
-                            <span style={css('font-size:14px;color:var(--color-neutral-700)')}>{o.meta}</span>
-                            <span style={css('font-size:14px;color:var(--color-accent-2-700)')}>{o.effect}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={editor.close}>Annuleren</button></div>
-                  </div>
-                </div>
-              )}
+              {positionEditorDialog}
 
-              {relocator && (
-                <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
-                  <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
-                    <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{relocator.title}</div>
-                    <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
-                      <div style={css('font-size:16px;color:var(--color-neutral-700);text-wrap:pretty')}>{relocator.intro}</div>
-                      <div style={css('display:flex;flex-direction:column;gap:5px')}>
-                        {relocator.options.map(o => (
-                          <button key={o.key} type="button" onClick={o.apply} style={css(o.style)}>
-                            <span style={css('font-size:17px;font-weight:500')}>{o.name}</span>
-                            <span style={css('font-size:14px;color:var(--color-neutral-700)')}>{o.meta}</span>
-                            <span style={css('font-size:14px;color:var(--color-accent-2-700)')}>{o.effect}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={relocator.close}>Op de bank laten</button></div>
-                  </div>
-                </div>
-              )}
+              {positionRelocatorDialog}
 
               <div data-noprint="1" style={css('display:flex;flex-wrap:wrap;gap:var(--space-1) var(--space-4);font-size:15px;color:var(--color-neutral-700);max-width:80ch')}>
                 <span>Bovenste naam = 1e helft, onderste naam = na de wissel op 8:00.</span>
@@ -1789,35 +2388,7 @@ export default function App() {
                   <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{matchDateTimeLine}</span>
                 </div>
                 <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-6)')}>
-                {g.items.map(h => (
-                  <article key={h.key} data-halfcard="1" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-                    <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-2);border-bottom:2px solid var(--color-text);padding-bottom:4px')}>
-                      <h3 style={css('font-family:var(--font-heading);font-size:21px;margin:0;font-weight:600;white-space:nowrap')}>{h.title}</h3>
-                      <span style={css('font-size:13px;color:var(--color-neutral-700);letter-spacing:0.06em')}>{h.time}</span>
-                    </div>
-                    <div style={css('display:flex;flex-direction:column;gap:6px;padding-top:2px')}>
-                      {h.rows.map(row => (
-                        <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
-                          {row.cells.map(cell => (
-                            <div key={cell.key} data-poscell="1" style={css(cell.style)}>
-                              <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
-                              <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
-                              <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                    <div style={css('display:flex;flex-direction:column;gap:5px;padding-top:8px;font-size:15px')}>
-                      {h.notes.map(n => (
-                        <div key={n.key} style={css(n.style)}>
-                          <div style={css('letter-spacing:0.1em;text-transform:uppercase;font-size:11px;color:var(--color-neutral-700)')}>{n.label}</div>
-                          <div style={css('line-height:1.35;text-wrap:pretty')}>{n.text}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </article>
-                ))}
+                {g.items.map(halfCard)}
                 </div>
               </div>
               ))}
@@ -1910,28 +2481,7 @@ export default function App() {
                     <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Strafcornerschema {half.label}</h3>
                   </div>
                   <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Per speelblok de hoogste keus per rol die op dat moment ook echt in het veld staat.</p>
-                  <table className="table" data-keeptogether="1">
-                    <thead>
-                      <tr><th style={{ textAlign: 'left' }}>Speelblok</th><th style={{ textAlign: 'left' }}>Verdedigen</th><th style={{ textAlign: 'left' }}>Aanval</th></tr>
-                    </thead>
-                    <tbody>
-                      {half.rows.map(r => (
-                        <tr key={r.key}>
-                          <td style={{ textAlign: 'left' }}>{r.label}</td>
-                          <td style={{ textAlign: 'left' }}>
-                            {r.verdedigen.map(x => (
-                              <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
-                            ))}
-                          </td>
-                          <td style={{ textAlign: 'left' }}>
-                            {r.aanval.map(x => (
-                              <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
-                            ))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {scBlockTable(half.rows)}
                 </div>
               ))}
 
@@ -2008,6 +2558,17 @@ export default function App() {
           <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
             {fixtureRows.length ? '' : 'Nog geen wedstrijden voor ' + ownTeamName + '.'}
           </p>
+          <div className="field" style={css('max-width:360px')}>
+            <label htmlFor="programma-poule">Competitie</label>
+            <select className="input" id="programma-poule" value={effectiveProgrammaFilter} onChange={e => {
+              const v = e.target.value;
+              setProgrammaCompetitionFilter(v === 'friendly' || v === 'all' ? v : Number(v));
+            }}>
+              {poules.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              <option value="friendly">Oefenwedstrijden</option>
+              <option value="all">Alle wedstrijden van seizoen 2026-2027</option>
+            </select>
+          </div>
           {pastFixtureCount > 0 && (
             <label style={css('display:flex;align-items:center;gap:6px;font-size:15px;cursor:pointer')}>
               <input type="checkbox" checked={showPastFixtures} onChange={e => setShowPastFixtures(e.target.checked)} />
@@ -2015,35 +2576,50 @@ export default function App() {
             </label>
           )}
           <div style={{ overflowX: 'auto' }}>
-            <table className="table" style={css('min-width:980px')}>
-              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th style={{ textAlign: 'left' }}>Type</th><th>Eindstand</th>{!readOnly && <><th>Punten</th><th></th><th></th></>}</tr></thead>
+            <table className="table" style={css('min-width:0;table-layout:fixed;width:100%')}>
+              <thead><tr>
+                <th style={{ textAlign: 'left', width: '122px', padding: '4px 5px' }}>Datum</th>
+                <th style={{ textAlign: 'left', width: '38px', padding: '4px 5px' }}>Dag</th>
+                <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Verzamel</th>
+                <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Start</th>
+                <th style={{ textAlign: 'left', padding: '4px 5px' }}>Wedstrijd</th>
+                <th style={{ textAlign: 'left', width: '120px', padding: '4px 5px' }}>Type</th>
+                <th style={{ width: '85px', padding: '4px 5px' }}>Eindstand</th>
+                <th style={{ width: '54px', padding: '4px 5px' }}>Punten</th>
+                {!readOnly && <><th style={{ width: '92px', padding: '4px 5px 4px 12px' }}>Schema</th><th style={{ width: '84px', padding: '4px 5px' }}>Gespeeld</th></>}
+              </tr></thead>
               <tbody>
                 {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
-                    <td>{readOnly ? nlDate(f.date) : <input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} />}</td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.day}</td>
-                    <td>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px;width:110px')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
-                    <td>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} />}</td>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '4px 5px' }}>{readOnly ? nlDate(f.date) : <input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.date} onChange={f.onDate} />}</td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', padding: '4px 5px' }}>{f.day}</td>
+                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
+                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.time} onChange={f.onTime} />}</td>
+                    <td style={{ textAlign: 'left', overflowWrap: 'break-word', padding: '4px 5px' }}>
                       <span style={css(f.homeStyle)}>{f.homeName}{f.home ? ' ♥' : ''}</span>
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
                       <span style={css(f.awayStyle)}>{f.awayName}{!f.home ? ' ♥' : ''}</span>
                     </td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.type}</td>
-                    <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                      {readOnly ? (f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—') : (
-                        <>
-                          <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:44px;text-align:center;padding:4px')} value={f.gf} onChange={f.onGf} />
-                          <span style={{ padding: '0 3px' }}>–</span>
-                          <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:44px;text-align:center;padding:4px')} value={f.ga} onChange={f.onGa} />
-                        </>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', overflowWrap: 'break-word', padding: '4px 5px' }}>{f.type}</td>
+                    <td style={{ textAlign: 'center', padding: '4px 5px' }}>
+                      {f.live ? (
+                        <span style={css('display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--color-accent-700)')} title="Live stand">
+                          <span className="blink-alert" style={css('width:7px;height:7px;border-radius:50%;background:#c23b3b;display:inline-block;flex:0 0 auto')} />
+                          {f.live.home}–{f.live.away}
+                        </span>
+                      ) : readOnly ? (f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—') : (
+                        <span style={css('display:inline-flex;align-items:center;gap:2px')}>
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:30px;text-align:center;padding:4px 2px')} value={f.gf} onChange={f.onGf} />
+                          <span>–</span>
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:30px;text-align:center;padding:4px 2px')} value={f.ga} onChange={f.onGa} />
+                        </span>
                       )}
                     </td>
+                    <td style={{ textAlign: 'center', padding: '4px 5px' }}>{f.points}</td>
                     {!readOnly && (
                       <>
-                        <td style={{ textAlign: 'center' }}>{f.points}</td>
-                        <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-secondary" style={{ padding: '3px 10px' }} onClick={f.plan}>{f.planLabel}</button></td>
-                        <td style={{ textAlign: 'center', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.status} <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={f.remove}>×</button></td>
+                        <td style={{ textAlign: 'center', padding: '4px 5px' }}><button type="button" className="btn btn-secondary" style={{ padding: '3px 6px', fontSize: '13px' }} onClick={f.plan}>{f.planLabel}</button></td>
+                        <td style={{ textAlign: 'center', whiteSpace: 'nowrap', padding: '4px 5px' }}><input type="checkbox" checked={f.played} disabled aria-label={`Gespeeld — wedstrijd tegen ${f.opponent || 'onbekend'}`} /> <button type="button" className="btn btn-ghost" style={{ padding: '2px 6px' }} onClick={f.remove}>×</button></td>
                       </>
                     )}
                   </tr>
@@ -2164,6 +2740,7 @@ export default function App() {
                   {isMyTeam && <th>Niveau</th>}
                   {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
                   <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
+                  <th style={{ fontSize: '12px' }}>DP</th>
                   {!readOnly && <th></th>}
                 </tr>
               </thead>
@@ -2187,6 +2764,11 @@ export default function App() {
                       </td>
                     ))}
                     <td style={{ textAlign: 'center' }}><input type="checkbox" aria-label={`Vaste keeper: ${r.name}`} checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
+                    <td style={{ textAlign: 'center' }}>
+                      {readOnly ? (r.dp || '0') : (
+                        <input className="input" type="number" min="0" aria-label={`Doelpunten dit seizoen — ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={r.dp} onChange={r.onDp} />
+                      )}
+                    </td>
                     {!readOnly && <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>}
                   </tr>
                 ))}
@@ -2205,6 +2787,96 @@ export default function App() {
               </label>
               <button type="button" className="btn btn-primary" onClick={addPlayer}>Toevoegen</button>
             </div>
+          )}
+        </main>
+      )}
+
+      {tab === 'verslagen' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
+          <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Wedstrijdverslagen</h2>
+          <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Wedstrijden die vanuit wedstrijdmodus zijn beëindigd, staan hier met het scoreverloop van die wedstrijd.</p>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left' }}>Datum</th>
+                  <th style={{ textAlign: 'left' }}>Wedstrijd</th>
+                  <th style={{ textAlign: 'left' }}>Type</th>
+                  <th>Eindstand</th>
+                  <th style={{ textAlign: 'left' }}>Wedstrijdverslag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fixtureRows.map(f => [
+                  <tr key={f.key}>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{nlDate(f.date)}</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
+                      <span style={css(f.homeStyle)}>{f.homeName}</span> – <span style={css(f.awayStyle)}>{f.awayName}</span>
+                    </td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.type}</td>
+                    <td style={{ textAlign: 'center' }}>{f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—'}</td>
+                    <td style={{ textAlign: 'left' }}>
+                      {f.report ? (
+                        <button type="button" className="btn btn-ghost" style={css('padding:2px 8px;font-size:14px')} onClick={() => setExpandedReportId(id => id === f.key ? null : f.key)}>
+                          {expandedReportId === f.key ? 'Verberg verslag' : 'Bekijk verslag'}
+                        </button>
+                      ) : '—'}
+                    </td>
+                  </tr>,
+                  expandedReportId === f.key && f.report ? (
+                    <tr key={f.key + '-report'}>
+                      <td colSpan={5} style={{ textAlign: 'left', padding: '4px 5px 16px' }}>
+                        <ul style={css('list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-width:640px')}>
+                          {f.report.map((g, i) => (
+                            <li key={i} style={css('font-size:15px;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--color-neutral-100)')}>
+                              {formatMatchLogEntry(g, !!f.home, f.opponent || 'Tegenstander')}
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  ) : null,
+                ])}
+              </tbody>
+            </table>
+          </div>
+        </main>
+      )}
+
+      {tab === 'live' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
+          {m.liveOpened ? (
+            <>
+              <div className="card elev-md" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:4px')}>
+                {liveStatus() && liveStatus().label && (
+                  <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:#c23b3b')}>{liveStatus().label}</span>
+                )}
+                <span style={css('font-family:var(--font-heading);font-size:19px;font-weight:600;text-wrap:pretty')}>{liveStatus() ? liveStatus().line : ''}</span>
+              </div>
+              <div style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                <h2 style={css('font-family:var(--font-heading);font-size:22px;margin:0;font-weight:600')}>Scoreverloop</h2>
+                {(m.goalLog || []).length ? (
+                  <ul style={css('list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px')}>
+                    {(() => {
+                      // Zelfde thuis/uit-volgorde als de tussenstand-regel hierboven (scheduleTitle),
+                      // zodat een los logregeltje nooit een ander scoreverloop lijkt te tonen dan de
+                      // stand erboven.
+                      const home = !(scoreFxObj && scoreFxObj.home === false);
+                      const opponentName = m.opponent || (scoreFxObj && scoreFxObj.opponent) || 'Tegenstander';
+                      return (m.goalLog || []).map((g, i) => (
+                        <li key={i} style={css('font-size:16px;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--color-neutral-100)')}>
+                          {formatMatchLogEntry(g, home, opponentName)}
+                        </li>
+                      ));
+                    })()}
+                  </ul>
+                ) : (
+                  <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700)')}>Nog geen doelpunten.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700)')}>Er is nu geen live wedstrijd.</p>
           )}
         </main>
       )}
@@ -2575,6 +3247,8 @@ export default function App() {
           </div>
         </main>
       )}
+
+      </>)}
     </div>
   );
 }

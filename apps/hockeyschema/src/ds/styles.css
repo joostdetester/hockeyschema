@@ -365,6 +365,13 @@ textarea.input { min-height: 90px; resize: vertical; }
 }
 .switch input:checked ~ .switch-knob { left: 22px; color: #3fcf6e; }
 
+/* — wisselsignaal (wedstrijdmodus aftelklok) — */
+@keyframes blink-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.blink-alert { animation: blink-alert 1s step-start infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .blink-alert { animation: none; }
+}
+
 /* — tags — */
 .tag {
   display: inline-flex; align-items: center; font-size: 11px;
