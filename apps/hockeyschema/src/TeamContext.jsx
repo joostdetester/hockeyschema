@@ -23,12 +23,6 @@ function slugify(name) {
 
 export function TeamProvider({ children }) {
   const { myTeams } = useAuth();
-  // Iemand kan aan meerdere teams gekoppeld zijn - bij inloggen kiezen we er hier één als
-  // startpunt (de eerste in de kaart); wisselen naar een ander eigen team kan daarna gewoon
-  // via het team-dropdown. Vastgelegd als losse string i.p.v. rechtstreeks op het myTeams-
-  // object te depend'en, want dat is een nieuw object bij elke snapshot (ook wanneer de
-  // inhoud niet wijzigt) en zou dit effect dan onnodig vaak laten terugspringen.
-  const firstMyTeamId = (myTeams && Object.keys(myTeams)[0]) || null;
   const [teams, setTeams] = useState([]);
   const [teamsLoaded, setTeamsLoaded] = useState(false);
   const [currentTeamId, setCurrentTeamId] = useState(null);
@@ -64,10 +58,20 @@ export function TeamProvider({ children }) {
     if (fallback) setCurrentTeamId(fallback);
   }, [teamsLoaded, defaultTeamLoaded, defaultTeamId, teams, currentTeamId]);
 
+  // Iemand kan aan meerdere teams gekoppeld zijn - bij inloggen kiezen we er hier één als
+  // startpunt: bij voorkeur het ingestelde standaardteam, als dat er één van is, anders de
+  // eerste koppeling. Wisselen naar een ander eigen team kan daarna gewoon via het
+  // team-dropdown. Vastgelegd als losse string i.p.v. rechtstreeks op het myTeams-object te
+  // depend'en, want dat is een nieuw object bij elke snapshot (ook wanneer de inhoud niet
+  // wijzigt) en zou dit effect dan onnodig vaak laten terugspringen.
+  const myTeamIds = myTeams ? Object.keys(myTeams) : [];
+  const preferredMyTeamId = !myTeamIds.length ? null
+    : (defaultTeamId && myTeams[defaultTeamId]) ? defaultTeamId : myTeamIds[0];
+
   // Bij inloggen automatisch naar het eigen team wisselen.
   useEffect(() => {
-    if (firstMyTeamId) setCurrentTeamId(firstMyTeamId);
-  }, [firstMyTeamId]);
+    if (preferredMyTeamId) setCurrentTeamId(preferredMyTeamId);
+  }, [preferredMyTeamId]);
 
   async function setDefaultTeam(teamId) {
     await setDoc(doc(db, 'settings', 'app'), { defaultTeamId: teamId });

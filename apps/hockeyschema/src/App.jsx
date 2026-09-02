@@ -1484,7 +1484,7 @@ export default function App() {
               </div>
               {user ? (
                 <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:14px')}>
-                  <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : ''}</span>
+                  <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : (myRoleForCurrentTeam ? ` · ${myRoleForCurrentTeam}` : '')}</span>
                   <button type="button" className="btn btn-secondary" onClick={logout}>Uitloggen</button>
                 </div>
               ) : (
