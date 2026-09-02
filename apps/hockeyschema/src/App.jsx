@@ -119,6 +119,30 @@ const C_MOVE_BG = 'var(--color-accent-100)';
 // blijven.
 function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
 
+function InfoDot({ text }) {
+  return (
+    <span className="info-dot">
+      <button type="button" tabIndex={0} aria-label="Meer uitleg"
+        style={css('width:18px;height:18px;border-radius:50%;border:1px solid var(--color-neutral-400);background:var(--color-neutral-100);color:var(--color-neutral-700);font-size:11px;font-style:italic;font-family:serif;line-height:1;cursor:default;padding:0;display:inline-flex;align-items:center;justify-content:center')}>
+        i
+      </button>
+      <span className="info-dot-tip card elev-sm" style={css('position:absolute;left:24px;top:-6px;z-index:5;width:270px;font-size:13px;font-weight:400;line-height:1.4;color:var(--color-neutral-800);text-wrap:pretty')}>
+        {text}
+      </span>
+    </span>
+  );
+}
+
+function Switch({ checked, onChange, disabled }) {
+  return (
+    <label className="switch">
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+      <span className="switch-track" />
+      <span className="switch-knob">{checked ? '✓' : '✕'}</span>
+    </label>
+  );
+}
+
 function ratingOf(p) { return 50 + ((p && p.level ? p.level : 3) - 1) * 12.5; }
 // mode 'sterk': sterkste speelsters krijgen iets meer speeltijd.
 // mode 'zwak': gespiegeld — minder sterke speelsters krijgen iets meer speeltijd (zelfde bandbreedte).
@@ -130,12 +154,14 @@ function weight(p, mode) {
   return 0.94 + 0.12 * (Math.max(40, Math.min(100, rr)) - 50) / 50;
 }
 
-function assign(onPlayers, prevOn, mode) {
+function assign(onPlayers, prevOn, mode, opts) {
+  const zoneOn = !opts || opts.zone !== false;
+  const contOn = !opts || opts.continuity !== false;
   const cost = (p, pos) => {
     const r = p.prefs[pos];
     const base = (r ? r : 9) * 1000;
-    const z = mode === 'standaard' ? 0 : ZONE_W[PMAP[pos].zone] * (100 - ratingOf(p));
-    const cont = prevOn && prevOn[pos] === p.id ? -800 : 0;
+    const z = (mode === 'standaard' || !zoneOn) ? 0 : ZONE_W[PMAP[pos].zone] * (100 - ratingOf(p));
+    const cont = (contOn && prevOn && prevOn[pos] === p.id) ? -800 : 0;
     return base + z + cont;
   };
   let pool = onPlayers.slice();
@@ -166,6 +192,56 @@ function assign(onPlayers, prevOn, mode) {
   return res;
 }
 
+// Afspraak: bij een volledige wedstrijd (geen uitvaller) mogen twee veldspeelsters nooit meer dan
+// 1 speelblok van elkaar verschillen. Keepers en uitvallers vallen hierbuiten - zij spelen
+// structureel minder/anders. Werkt alleen op blocks vanaf fromBlock, zodat al gespeelde/vergrendelde
+// blokken niet met terugwerkende kracht wijzigen, en respecteert de "bank 1e helft -> gegarandeerd
+// veld 2e helft"-garantie door nooit iemand uit de tweede helft van een kwart te halen die daar
+// verplicht staat, en nooit iemand een heel kwart op de bank te zetten.
+function enforceFairness(blocks, field, keeperIds, injuries, ptMode, fromBlock, assignOpts) {
+  const fullMatch = field.filter(p => injuries[p.id] == null && keeperIds.indexOf(p.id) < 0);
+  const fmIds = fullMatch.map(p => p.id);
+  if (fmIds.length < 2) return blocks;
+  const byId = {};
+  field.forEach(p => { byId[p.id] = p; });
+  const countOf = () => {
+    const c = {};
+    fmIds.forEach(id => { c[id] = 0; });
+    blocks.forEach(blk => Object.keys(blk.on).forEach(k => { if (c[blk.on[k]] != null) c[blk.on[k]]++; }));
+    return c;
+  };
+  const sitsWholeQuarter = (b, id) => {
+    const partner = b % 2 === 0 ? b + 1 : b - 1;
+    if (partner < 0 || partner >= blocks.length) return false;
+    return !Object.keys(blocks[partner].on).some(k => blocks[partner].on[k] === id);
+  };
+  let guard = 0;
+  while (guard++ < 300) {
+    const counts = countOf();
+    let maxId = fmIds[0], minId = fmIds[0];
+    fmIds.forEach(id => {
+      if (counts[id] > counts[maxId]) maxId = id;
+      if (counts[id] < counts[minId]) minId = id;
+    });
+    if (counts[maxId] - counts[minId] <= 1) break;
+    let done = false;
+    for (let b = fromBlock; b < blocks.length && !done; b++) {
+      const blk = blocks[b];
+      const onIds = Object.keys(blk.on).map(k => blk.on[k]);
+      if (onIds.indexOf(maxId) < 0 || blk.bench.indexOf(minId) < 0) continue;
+      if (b % 2 === 1 && blocks[b - 1] && blocks[b - 1].bench.indexOf(maxId) >= 0) continue;
+      if (sitsWholeQuarter(b, maxId)) continue;
+      const prevOn = b > 0 ? blocks[b - 1].on : null;
+      const newOnPlayers = onIds.map(id => id === maxId ? byId[minId] : byId[id]);
+      blk.on = assign(newOnPlayers, prevOn, ptMode, assignOpts);
+      blk.bench = blk.bench.filter(id => id !== minId).concat([maxId]);
+      done = true;
+    }
+    if (!done) break;
+  }
+  return blocks;
+}
+
 function buildSchedule(match, players, fromHalf) {
   const keeperIds = [match.keeperId, match.keeper2Id].filter(Boolean);
   const keeperAt = i => (match.keeper2Id && i >= 4) ? match.keeper2Id : match.keeperId;
@@ -178,6 +254,8 @@ function buildSchedule(match, players, fromHalf) {
   field.forEach(p => { played[p.id] = 0; });
   prev.forEach(b => Object.keys(b.on).forEach(k => { if (played[b.on[k]] != null) played[b.on[k]]++; }));
   const ptMode = match.playTimeMode === 'zwak' || match.playTimeMode === 'standaard' ? match.playTimeMode : 'sterk';
+  const assignOpts = { zone: match.zoneStrength !== false, continuity: match.continuity !== false };
+  const prefCorrectionOn = match.prefCorrection !== false;
   const wsum = field.reduce((s, p) => s + weight(p, ptMode), 0);
   const slots = Math.min(10, field.length);
   const blocks = prev.slice();
@@ -210,41 +288,43 @@ function buildSchedule(match, players, fromHalf) {
     const prevOn = blocks[b - 1] ? blocks[b - 1].on : null;
     const byId = {};
     avail.forEach(p => { byId[p.id] = p; });
-    let assignMap = assign(on, prevOn, ptMode);
-    const prefCost = map => Object.keys(map).reduce((s, pos) => {
-      const p = byId[map[pos]];
-      return s + (p && p.prefs[pos] ? p.prefs[pos] : 9);
-    }, 0);
-    let guard = 0, changed = true;
-    while (changed && guard++ < 12) {
-      changed = false;
-      const bad = Object.keys(assignMap).filter(pos => {
-        const p = byId[assignMap[pos]];
-        return p && !p.prefs[pos] && mustPlay.indexOf(p.id) < 0;
-      });
-      for (let bi = 0; bi < bad.length && !changed; bi++) {
-        const pos = bad[bi];
-        const offId = assignMap[pos];
-        let best = null;
-        bench.filter(bp => bp.prefs[pos]).forEach(bp => {
-          const newOn = on.map(p => p.id === offId ? bp : p);
-          const cand = assign(newOn, prevOn, ptMode);
-          const c = prefCost(cand);
-          if (!best || c < best.c) best = { c, cand, newOn, bp };
+    let assignMap = assign(on, prevOn, ptMode, assignOpts);
+    if (prefCorrectionOn) {
+      const prefCost = map => Object.keys(map).reduce((s, pos) => {
+        const p = byId[map[pos]];
+        return s + (p && p.prefs[pos] ? p.prefs[pos] : 9);
+      }, 0);
+      let guard = 0, changed = true;
+      while (changed && guard++ < 12) {
+        changed = false;
+        const bad = Object.keys(assignMap).filter(pos => {
+          const p = byId[assignMap[pos]];
+          return p && !p.prefs[pos] && mustPlay.indexOf(p.id) < 0;
         });
-        if (best && best.c < prefCost(assignMap)) {
-          const offP = byId[offId];
-          on = best.newOn;
-          bench = bench.filter(x => x.id !== best.bp.id).concat([offP]);
-          assignMap = best.cand;
-          changed = true;
+        for (let bi = 0; bi < bad.length && !changed; bi++) {
+          const pos = bad[bi];
+          const offId = assignMap[pos];
+          let best = null;
+          bench.filter(bp => bp.prefs[pos]).forEach(bp => {
+            const newOn = on.map(p => p.id === offId ? bp : p);
+            const cand = assign(newOn, prevOn, ptMode, assignOpts);
+            const c = prefCost(cand);
+            if (!best || c < best.c) best = { c, cand, newOn, bp };
+          });
+          if (best && best.c < prefCost(assignMap)) {
+            const offP = byId[offId];
+            on = best.newOn;
+            bench = bench.filter(x => x.id !== best.bp.id).concat([offP]);
+            assignMap = best.cand;
+            changed = true;
+          }
         }
       }
     }
     on.forEach(p => { played[p.id]++; });
     blocks.push({ on: assignMap, bench: bench.map(p => p.id) });
   }
-  return blocks;
+  return enforceFairness(blocks, field, keeperIds, injuries, ptMode, prev.length, assignOpts);
 }
 
 function halvesPlayed(schedule) {
@@ -283,7 +363,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, friendly: false });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
-  const [printOptions, setPrintOptions] = useState({ strafcorner: false, speeltijd: false });
+  const [printOptions, setPrintOptions] = useState({ wedstrijdschema: true, strafcorner: false, speeltijd: false });
   const [history, setHistory] = useState([]);
   const [match, setMatch] = useState(BLANK_MATCH);
   const [editing, setEditing] = useState(null);
@@ -312,6 +392,7 @@ export default function App() {
   const [standingsError, setStandingsError] = useState('');
   const [selectedPouleId, setSelectedPouleId] = useState(null);
   const [showPastOuders, setShowPastOuders] = useState(false);
+  const [showPastFixtures, setShowPastFixtures] = useState(false);
   const migratedRef = useRef(false);
 
   // isMyTeam: ingelogd én (het bekeken team is het eigen team, of gebruiker is admin) - een
@@ -519,8 +600,19 @@ export default function App() {
         });
       if (!rows.length) { setLisaError('Geen wedstrijden gevonden.'); return; }
       setFixtures(fs => {
-        const known = new Set(fs.map(f => f.date + '|' + f.opponent));
-        return fs.concat(rows.filter(r => !known.has(r.date + '|' + r.opponent)));
+        const idxByKey = {};
+        fs.forEach((f, i) => { idxByKey[f.date + '|' + f.opponent] = i; });
+        const next = fs.slice();
+        const added = [];
+        rows.forEach(r => {
+          const idx = idxByKey[r.date + '|' + r.opponent];
+          if (idx == null) { added.push(r); return; }
+          const existing = next[idx];
+          if (existing.time !== r.time || existing.home !== r.home) {
+            next[idx] = { ...existing, time: r.time, home: r.home };
+          }
+        });
+        return next.concat(added);
       });
     } catch (e) {
       setLisaError('Importeren mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
@@ -577,6 +669,16 @@ export default function App() {
     })();
   }, [isAdmin, teamsLoaded, teams.length]);
 
+  // Als de selectie een vaste keeper bevat (aangevinkt bij Team) en er nog geen keeper is
+  // gekozen voor deze wedstrijd, vul die dan automatisch in bij Stap 2 — scheelt een handmatige
+  // stap bij elke wedstrijd. Een al gekozen keeper wordt nooit overschreven.
+  useEffect(() => {
+    if (readOnly || match.locked || match.keeperId) return;
+    const sel = match.selected || [];
+    const fixed = players.find(p => p.fixedKeeper && sel.indexOf(p.id) >= 0);
+    if (fixed) setMatch(m => (m.keeperId ? m : { ...m, keeperId: fixed.id }));
+  }, [match.selected, match.keeperId, match.locked, players, readOnly]);
+
   const patchMatch = obj => { if (readOnly) return; setMatch(m => ({ ...m, ...obj })); };
   const byId = id => players.find(p => p.id === id);
   const nameOf = id => { const p = byId(id); return p ? displayFirst(p) : '—'; };
@@ -632,7 +734,7 @@ export default function App() {
     if (!match.keeperId) { window.alert('Kies eerst een keeper.'); return; }
     const sched = buildSchedule(match, players, 0);
     if (!sched) { window.alert('Selecteer minimaal 7 speelsters (keeper + 6 veldspeelsters).'); return; }
-    setMatch(m => ({ ...m, schedule: sched }));
+    setMatch(m => ({ ...m, schedule: sched, scheduleSelected: (m.selected || []).slice() }));
   }
 
   function saveMatch() {
@@ -719,18 +821,21 @@ export default function App() {
   // bewust wél voor iedereen zichtbaar (ook uitgelogd) - dat is juist waar ouders zonder
   // account kunnen zien wie de pauzehap heeft en wie er rijdt.
   const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'teams'];
+  // Een manager (niet-admin) is geen coach-lid van het team en krijgt dus dezelfde tabs te zien
+  // als een uitgelogde bezoeker (Programma, Standen, Team, Ouders) - alleen bij Ouders heeft hij
+  // via canManageOuders daadwerkelijk bewerkrechten, de rest zou toch alleen de accessGate tonen.
+  const managerOnly = !!user && role === 'manager' && !isAdmin;
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
-  ].filter(t => user || !LOGGED_IN_ONLY_TABS.includes(t[0])).map(t => ({
+  ].filter(t => (user && !managerOnly) || !LOGGED_IN_ONLY_TABS.includes(t[0])).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
       + (tab === t[0]
         ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600'
         : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400')
   }));
-  const activeTabLabel = (tabs.find(t => t.key === tab) || {}).label || 'Wedstrijdschema';
 
   const sel = m.selected || [];
   const selectionChips = players.map(p => {
@@ -1022,27 +1127,97 @@ export default function App() {
       const val = e.target.value;
       setSc(s => ({ ...s, [group]: s[group].map(r => r.id === row.id ? { ...r, role: val } : r) }));
     },
-    cells: (row.picks || [null, null, null]).map((pid, ci) => ({
-      key: ci, value: pid || '',
-      onChange: e => {
-        if (readOnly) return;
-        const val = e.target.value || null;
-        setSc(s => ({
-          ...s,
-          [group]: s[group].map(r => r.id === row.id ? { ...r, picks: r.picks.map((p, j) => j === ci ? val : p) } : r)
-        }));
-      }
-    })),
+    cells: (row.picks || [null, null, null]).map((pid, ci, picks) => {
+      const usedElsewhere = picks.filter((v, j) => j !== ci && v);
+      return {
+        key: ci, value: pid || '',
+        options: players.filter(p => usedElsewhere.indexOf(p.id) < 0),
+        onChange: e => {
+          if (readOnly) return;
+          const val = e.target.value || null;
+          if (val && usedElsewhere.indexOf(val) >= 0) return;
+          setSc(s => ({
+            ...s,
+            [group]: s[group].map(r => r.id === row.id ? { ...r, picks: r.picks.map((p, j) => j === ci ? val : p) } : r)
+          }));
+        }
+      };
+    }),
     remove: () => { if (readOnly) return; setSc(s => ({ ...s, [group]: s[group].filter(r => r.id !== row.id) })); }
   }));
   const addScRole = group => {
     if (readOnly) return;
     setSc(s => ({ ...s, [group]: (s[group] || []).concat([{ id: 'sc' + Date.now() + Math.random().toString(36).slice(2, 6), role: '', picks: [null, null, null] }]) }));
   };
-  const scSummary = group => (sc[group] || []).map(r => {
+  // Strafcorner-picks voor déze wedstrijd: standaard de seizoensvolgorde (uit de Strafcorner-tab),
+  // maar alleen de spelers die voor deze wedstrijd geselecteerd én (nog) niet uitgevallen zijn.
+  // Wie wegvalt (niet geselecteerd, of tijdens de wedstrijd geblesseerd) wordt uit de rij
+  // gefilterd i.p.v. alleen leeggemaakt, zodat een volgende keus automatisch opschuift. Een
+  // handmatige vervanging (m.scOverrides) geldt alleen voor deze wedstrijd en raakt de
+  // seizoensvolgorde zelf niet aan.
+  const scAvailIds = () => {
     const selIds = m.selected || [];
-    const availIds = (r.picks || []).filter(pid => pid && selIds.indexOf(pid) >= 0);
-    return { key: r.id, role: r.role, names: availIds.length ? availIds.map(id => nameOf(id)).join(', ') : '—' };
+    const injuredIds = Object.keys(m.injuries || {});
+    return selIds.filter(id => injuredIds.indexOf(id) < 0);
+  };
+  const scAvailablePlayers = () => {
+    const avail = scAvailIds();
+    return players.filter(p => avail.indexOf(p.id) >= 0);
+  };
+  const scRolePicks = (group, row) => {
+    const avail = scAvailIds();
+    const overrides = (m.scOverrides && m.scOverrides[group]) || {};
+    const raw = overrides[row.id] || row.picks;
+    const f = (raw || []).filter(pid => pid && avail.indexOf(pid) >= 0);
+    while (f.length < 3) f.push(null);
+    return f;
+  };
+  const scMatchRows = group => (sc[group] || []).map(row => {
+    const picks = scRolePicks(group, row);
+    const overrides = (m.scOverrides && m.scOverrides[group]) || {};
+    return {
+      key: row.id,
+      role: row.role,
+      cells: picks.map((pid, ci) => {
+        const usedElsewhere = picks.filter((v, j) => j !== ci && v);
+        return {
+          key: ci,
+          value: pid || '',
+          options: scAvailablePlayers().filter(p => usedElsewhere.indexOf(p.id) < 0),
+          onChange: e => {
+            if (readOnly || matchLocked) return;
+            const val = e.target.value || null;
+            if (val && usedElsewhere.indexOf(val) >= 0) return;
+            const next = picks.map((p, j) => j === ci ? val : p);
+            patchMatch({ scOverrides: { ...(m.scOverrides || {}), [group]: { ...overrides, [row.id]: next } } });
+          }
+        };
+      })
+    };
+  });
+  // Strafcornerschema: per speelblok de hoogste keus per rol die op dat moment ook echt in het
+  // veld staat (een reserve op de bank kan geen corner nemen).
+  const scBlockRows = (sched || []).map((blk, i) => {
+    const onIds = Object.keys(blk.on).map(k => blk.on[k]);
+    // Eén speler kan niet op twee plekken tegelijk staan: rollen worden in volgorde toegekend
+    // (1e uitloop eerst, dan 2e uitloop, enz.) en wie al aan een eerdere rol in dit blok is
+    // toegewezen, valt bij de volgende rol af — die kijkt dan naar haar eigen volgende keus.
+    const per = group => {
+      const used = new Set();
+      return (sc[group] || []).map(row => {
+        const picks = scRolePicks(group, row);
+        const assignedId = picks.find(pid => pid && onIds.indexOf(pid) >= 0 && !used.has(pid));
+        if (assignedId) used.add(assignedId);
+        return { key: row.id, role: row.role, name: assignedId ? nameOf(assignedId) : '—' };
+      });
+    };
+    const q = Math.floor(i / 2);
+    return {
+      key: i,
+      label: (q + 1) + 'e kwart – ' + (i % 2 === 0 ? '1e helft' : '2e helft'),
+      verdedigen: per('verdedigen'),
+      aanval: per('aanval')
+    };
   });
 
   const totals = {};
@@ -1121,7 +1296,8 @@ export default function App() {
     const awayName = f.home ? (f.opponent || 'tegenstander ?') : ownTeamName;
     return {
       key: f.id,
-      date: f.date, time: f.time, opponent: f.opponent,
+      date: f.date, time: f.time, opponent: f.opponent, home: !!f.home,
+      verzameltijd: f.verzameltijd || '',
       day: d && !isNaN(d) ? DAGEN[d.getDay()] : '—',
       homeName, awayName,
       homeStyle: f.home ? 'color:var(--color-accent-700);font-weight:600' : 'color:var(--color-text)',
@@ -1129,6 +1305,7 @@ export default function App() {
       status: (f.gf !== '' && f.gf != null && f.ga !== '' && f.ga != null) ? 'gespeeld' : '—',
       onDate: e => upd({ date: e.target.value }),
       onTime: e => upd({ time: e.target.value }),
+      onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
       gf: f.gf == null ? '' : String(f.gf),
       ga: f.ga == null ? '' : String(f.ga),
       onGf: e => { if (readOnly) return; const v = e.target.value; upd({ gf: v }); setHistory(hs => hs.map(h => (h.date === f.date && h.opponent === f.opponent) ? { ...h, gf: v } : h)); },
@@ -1148,19 +1325,20 @@ export default function App() {
       remove: () => { if (!readOnly) setFixtures(fs => fs.filter(x => x.id !== f.id)); }
     };
   });
+  const pastFixtureCount = fixtureRows.filter(f => f.status === 'gespeeld').length;
+  const visibleFixtureRows = showPastFixtures ? fixtureRows : fixtureRows.filter(f => f.status !== 'gespeeld');
 
   const RIJDER_SLOTS = 4;
   const todayISO = new Date().toISOString().slice(0, 10);
   const nlDate = d => d && d.length === 10 ? d.slice(8, 10) + '-' + d.slice(5, 7) + '-' + d.slice(0, 4) : '?';
-  // Hoeveel pauzehappen een speelster dit seizoen al heeft gedaan (los van deze rij) - laat
-  // zien als "(1)"/"(2)" achter haar naam in de keuzelijst, zodat eerlijk verdelen makkelijker
-  // is. Telt alle wedstrijden mee (verleden én toekomst), behalve de rij die je nu bekijkt.
-  const pauzehapCount = (playerId, excludeFixtureId) =>
-    fixtures.filter(x => x.id !== excludeFixtureId && x.pauzehapId === playerId).length;
-  // Zelfde idee, maar dan voor het aantal keer dat iemand al is ingedeeld om te rijden (in
-  // om het even welke van de 4 rijder-plekken), zodat ook dat eerlijk te verdelen is.
-  const rijderCount = (playerId, excludeFixtureId) =>
-    fixtures.filter(x => x.id !== excludeFixtureId && (x.rijders || []).indexOf(playerId) >= 0).length;
+  // Het hoeveelste keer dit seizoen een speelster de pauzehap doet (1e keer -> "(1)", 2e keer
+  // -> "(2)", enz.) - laat dat oplopende getal achter haar naam zien in de keuzelijst, zodat
+  // eerlijk verdelen makkelijker is. Telt alle wedstrijden mee (verleden én toekomst), inclusief
+  // de rij die je nu bekijkt - dus wie hier voor het eerst gekozen wordt, springt meteen naar "(1)".
+  const pauzehapCount = playerId => fixtures.filter(x => x.pauzehapId === playerId).length;
+  // Zelfde idee, maar dan voor het aantal keer dat iemand is ingedeeld om te rijden (in om het
+  // even welke van de 4 rijder-plekken), zodat ook dat eerlijk te verdelen is.
+  const rijderCount = playerId => fixtures.filter(x => (x.rijders || []).indexOf(playerId) >= 0).length;
 
   const ouderRowsAll = fixturesSorted.map(f => {
     const upd = obj => { if (!canManageOuders) return; setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
@@ -1176,12 +1354,11 @@ export default function App() {
       waar: f.home ? 'Thuis' : (f.opponent ? f.opponent.replace(/\s+[A-Z]{1,4}\d+(-\d+)?$/, '') : 'tegenstander ?'),
       datum: nlDate(f.date),
       verzameltijd: f.verzameltijd || '',
-      onVerzameltijd: e => upd({ verzameltijd: e.target.value }),
       startTijd: f.time || '',
       pauzehapId: f.pauzehapId || '',
       onPauzehap: e => upd({ pauzehapId: e.target.value || null }),
       pauzehapOptions: players.map(p => {
-        const n = pauzehapCount(p.id, f.id);
+        const n = pauzehapCount(p.id);
         return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
       }),
       // Altijd 4 slots (ook bij thuis) zodat elke rij dezelfde kolommen heeft in de tabel -
@@ -1193,7 +1370,7 @@ export default function App() {
           active: !f.home,
           value: rijders[i] || '',
           options: players.filter(p => chosenElsewhere.indexOf(p.id) < 0).map(p => {
-            const n = rijderCount(p.id, f.id);
+            const n = rijderCount(p.id);
             return { id: p.id, label: displayFirst(p) + (n > 0 ? ` (${n})` : '') };
           }),
           onChange: e => {
@@ -1226,11 +1403,19 @@ export default function App() {
 
   const dateline = (m.opponent ? 'tegen ' + m.opponent : 'geen tegenstander') + ' · 4 × ' + QUARTER_MIN + ' min';
   const scoreFxObj = fixtures.find(x => x.id === m.fixtureId);
+  const matchDateTimeLine = scheduleTitle + (m.date ? ' · ' + nlDate(m.date) : '') + (scoreFxObj && scoreFxObj.time ? ' ' + scoreFxObj.time : '');
   const vastePlayers = players.filter(p => !p.sub);
   const invallerPlayers = players.filter(p => p.sub);
   const chipFor = id => selectionChips.find(c => c.key === id);
   const matchLocked = !!m.locked;
   const generateWarning = !m.fixtureId ? 'Kies eerst een wedstrijd uit het programma.' : (!m.keeperId ? 'Kies eerst een keeper.' : (nSel < 8 ? 'Selecteer minimaal 8 speelsters.' : ''));
+  // Stap 1 (selectie) wijzigt m.selected zonder het schema te legen - zo blijft een al gemaakt
+  // schema staan i.p.v. abrupt te verdwijnen. m.scheduleSelected legt vast wie er geselecteerd
+  // waren tóén het schema (opnieuw) werd gemaakt; wijkt dat af van de huidige selectie, dan is
+  // het schema stale en moet het opnieuw gemaakt worden om de toegevoegde/verwijderde speler(s)
+  // mee te nemen.
+  const selectionChangedSinceSchedule = !!sched && !!m.scheduleSelected
+    && m.scheduleSelected.slice().sort().join(',') !== (m.selected || []).slice().sort().join(',');
 
   const accessGate = label => (
     <main style={css('padding-top:var(--space-6)')}>
@@ -1247,28 +1432,31 @@ export default function App() {
   return (
     <div data-sheet="1" style={css('position:relative;z-index:0;min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding:var(--space-6) var(--space-8) var(--space-8);max-width:1180px;margin:0 auto')}>
 
-      {/* Watermerk: negatieve z-index plaatst 'm ná de achtergrond van dit (position:relative)
-          element maar vóór alle gewone (niet-gepositioneerde) inhoud erna - anders zou een
-          position:absolute element juist BOVEN de gewone inhoud tekenen, ondanks dat het als
-          eerste in de DOM staat. */}
-      <img src="/hcrb.png" alt="" aria-hidden="true" style={css('position:absolute;top:50%;left:50%;translate:-50% -50%;width:min(50vw,480px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
+      {/* Watermerk: position:fixed t.o.v. de viewport (niet absolute t.o.v. deze - lange -
+          pagina), zodat het op elke pagina in het midden van het scherm blijft staan en niet
+          meescrollt. Negatieve z-index plaatst 'm ná de achtergrond maar vóór alle gewone
+          (niet-gepositioneerde) inhoud - anders zou hij juist BOVEN de gewone inhoud tekenen,
+          ondanks dat hij als eerste in de DOM staat. */}
+      <img src="/hcrb.png" alt="" aria-hidden="true" data-noprint="1" style={css('position:fixed;top:220px;right:max(var(--space-8),calc((100vw - 1180px) / 2 + var(--space-8)));width:min(12.5vw,120px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
 
-      <header style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+      <header data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
         <div style={css('height:5px;background:var(--color-text)')}></div>
         <div style={css('display:flex;align-items:flex-start;gap:var(--space-3);padding-top:var(--space-1)')}>
           <img src="/hcrb.png" alt="HCRB" style={css('height:76px;width:auto')} />
           <div style={css('display:flex;flex-direction:column;gap:var(--space-2);flex:1;min-width:0')}>
-            <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap')}>
-              <h1 style={css('font-family:var(--font-heading);font-weight:600;font-size:44px;line-height:1;margin:0;letter-spacing:-0.01em')}>{activeTabLabel} — {ownTeamName}</h1>
-              <div style={css('font-size:14px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>{dateline}</div>
+            <div style={css('display:flex;align-items:baseline;gap:var(--space-4);flex-wrap:wrap')}>
+              <h1 style={css('font-family:var(--font-heading);font-weight:600;font-size:44px;line-height:1;margin:0;letter-spacing:-0.01em')}>{m.opponent ? scheduleTitle : ownTeamName}</h1>
             </div>
             <div data-noprint="1" style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
-              <div className="field" style={css('margin:0;min-width:200px')}>
-                <select className="input" aria-label="Team" style={css('padding:5px 8px;font-size:14px')} value={currentTeamId || ''}
-                  onChange={e => setCurrentTeamId(e.target.value)}>
-                  {!teams.length && <option value="">Nog geen teams</option>}
-                  {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+              <div style={css('display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap')}>
+                <div className="field" style={css('margin:0;min-width:200px')}>
+                  <select className="input" aria-label="Team" style={css('padding:5px 8px;font-size:14px')} value={currentTeamId || ''}
+                    onChange={e => setCurrentTeamId(e.target.value)}>
+                    {!teams.length && <option value="">Nog geen teams</option>}
+                    {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <div style={css('font-size:14px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>{dateline}</div>
               </div>
               {user ? (
                 <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:14px')}>
@@ -1335,7 +1523,8 @@ export default function App() {
               </div>
             </div>
             <div style={css('display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap')}>
-              <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} onClick={() => patchMatch({ selected: players.map(p => p.id) })}>Iedereen selecteren</button>
+              <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} onClick={() => patchMatch({ selected: vastePlayers.map(p => p.id) })}>Vaste spelers selecteren</button>
+              <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} onClick={() => patchMatch({ selected: players.map(p => p.id) })}>Ook invallers selecteren</button>
               <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} onClick={() => patchMatch({ selected: [], keeperId: '', schedule: null, injuries: {} })}>Selectie wissen</button>
             </div>
           </section>
@@ -1393,6 +1582,40 @@ export default function App() {
                 </label>
               </div>
             </div>
+            <div>
+              <div style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);padding-bottom:6px')}>Positietoewijzing</div>
+              <div style={css('display:grid;grid-template-columns:max-content 44px 1fr;align-items:center;column-gap:var(--space-3);row-gap:10px;font-size:16px')}>
+                <span style={css('display:inline-flex;align-items:center;gap:6px')}>
+                  <span>Zone-sterkte</span>
+                  <InfoDot text="De posities in het midden (de as) worden bij voorkeur bemand met de sterkste speelsters, gevolgd door rechts, dan links. Uit: positie wordt alleen bepaald door voorkeur en continuïteit, ongeacht sterkte." />
+                </span>
+                <Switch checked={m.zoneStrength !== false} disabled={matchLocked || readOnly}
+                  onChange={v => patchMatch({ zoneStrength: v, schedule: null })} />
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                  {m.zoneStrength !== false ? 'Meer kans op sterkste spelers in de as' : 'Minder kans op sterkste spelers in de as'}
+                </span>
+
+                <span style={css('display:inline-flex;align-items:center;gap:6px')}>
+                  <span>Continuïteit</span>
+                  <InfoDot text="Een lichte voorkeur om een speelster in hetzelfde speelblok op dezelfde positie te laten staan als in het blok ervoor, zodat ze niet steeds van positie hoeft te wisselen. Uit: positie wordt elk blok volledig opnieuw bepaald." />
+                </span>
+                <Switch checked={m.continuity !== false} disabled={matchLocked || readOnly}
+                  onChange={v => patchMatch({ continuity: v, schedule: null })} />
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                  {m.continuity !== false ? 'Meer kans op dezelfde positie als vorig blok' : 'Minder kans op dezelfde positie als vorig blok'}
+                </span>
+
+                <span style={css('display:inline-flex;align-items:center;gap:6px')}>
+                  <span>Correctieronde op voorkeur</span>
+                  <InfoDot text="Na het indelen van een speelblok wordt gecontroleerd of iemand op een positie staat waar ze geen voorkeur voor heeft. Zo ja, dan wordt geprobeerd haar te ruilen met een bankspeelster die daar wél een voorkeur voor heeft — ook als dat voor dat blok ten koste gaat van de eerlijke speeltijdverdeling. Uit: speeltijd-eerlijkheid wijkt nooit voor positievoorkeur." />
+                </span>
+                <Switch checked={m.prefCorrection !== false} disabled={matchLocked || readOnly}
+                  onChange={v => patchMatch({ prefCorrection: v, schedule: null })} />
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                  {m.prefCorrection !== false ? 'Meer kans op ongelijke speeltijd' : 'Minder kans op ongelijke speeltijd'}
+                </span>
+              </div>
+            </div>
           </section>
 
           <section data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
@@ -1401,14 +1624,19 @@ export default function App() {
               <button type="button" className="btn btn-primary" disabled={matchLocked || readOnly} onClick={generate}>{sched ? 'Schema opnieuw maken' : 'Maak schema'}</button>
               <span style={css('font-size:15px;color:var(--color-accent-2-700)')}>{generateWarning}</span>
             </div>
+            {selectionChangedSinceSchedule && (
+              <div className="card elev-sm" style={css('padding:var(--space-3) var(--space-4);background:var(--color-accent-2-100);color:var(--color-accent-2-800)')}>
+                De selectie is gewijzigd sinds dit schema is gemaakt. Klik op "Schema opnieuw maken" om de toegevoegde of verwijderde speelster(s) mee te nemen — het schema hieronder is nog gebaseerd op de vorige selectie.
+              </div>
+            )}
           </section>
 
           {sched && (
             <section style={css('display:flex;flex-direction:column;gap:var(--space-6)')}>
 
-              <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap')}>
+              <div data-noprint="1" style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap')}>
                 <h2 style={css('font-family:var(--font-heading);font-size:30px;margin:0;font-weight:600')}>{scheduleTitle}</h2>
-                <div data-noprint="1" style={css('display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap')}>
+                <div style={css('display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap')}>
                   <button type="button" className="btn btn-secondary" onClick={() => setPrintDialogOpen(true)}>Printen</button>
                 </div>
               </div>
@@ -1417,7 +1645,11 @@ export default function App() {
                 <div className="dialog-backdrop" data-noprint="1" onClick={() => setPrintDialogOpen(false)}>
                   <div className="dialog" onClick={e => e.stopPropagation()}>
                     <div className="dialog-title">Wat wil je meeprinten?</div>
-                    <p className="dialog-body" style={css('margin:0')}>Het schema zelf wordt altijd geprint. Kies welke onderdelen daarnaast mee moeten.</p>
+                    <p className="dialog-body" style={css('margin:0')}>Kies welke onderdelen mee moeten printen.</p>
+                    <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
+                      <input type="checkbox" checked={printOptions.wedstrijdschema} onChange={e => setPrintOptions(o => ({ ...o, wedstrijdschema: e.target.checked }))} />
+                      <span>Wedstrijdschema</span>
+                    </label>
                     <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
                       <input type="checkbox" checked={printOptions.strafcorner} onChange={e => setPrintOptions(o => ({ ...o, strafcorner: e.target.checked }))} />
                       <span>Strafcorner</span>
@@ -1505,8 +1737,17 @@ export default function App() {
                 <span>Klik op een naam om die plek handmatig te wijzigen — je krijgt dan alternatieven te zien.</span>
               </div>
 
-              <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-6)')}>
-                {halves.map(h => (
+              {[{ label: 'kwart 1 en 2', items: halves.slice(0, 2), pagebreak: false }, { label: 'kwart 3 en 4', items: halves.slice(2, 4), pagebreak: true }].filter(g => g.items.length).map(g => (
+              <div key={g.label} data-noprint={printOptions.wedstrijdschema ? undefined : '1'} data-pagebreak={g.pagebreak ? '1' : undefined} style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+                <div style={css('display:flex;flex-direction:column;gap:2px')}>
+                  <div style={css('display:flex;align-items:center;gap:var(--space-3)')}>
+                    <img src="/hcrb.png" alt="HCRB" style={css('height:40px;width:auto')} />
+                    <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Wedstrijdschema {g.label}</h3>
+                  </div>
+                  <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{matchDateTimeLine}</span>
+                </div>
+                <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-6)')}>
+                {g.items.map(h => (
                   <article key={h.key} data-halfcard="1" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
                     <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-2);border-bottom:2px solid var(--color-text);padding-bottom:4px')}>
                       <h3 style={css('font-family:var(--font-heading);font-size:21px;margin:0;font-weight:600;white-space:nowrap')}>{h.title}</h3>
@@ -1535,26 +1776,9 @@ export default function App() {
                     </div>
                   </article>
                 ))}
-              </div>
-
-              <div data-noprint={printOptions.strafcorner ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
-                <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Strafcorner</h3>
-                <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Op basis van wie er voor deze wedstrijd is geselecteerd.</p>
-                <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--space-6)')}>
-                  <div>
-                    <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-accent-700);padding-bottom:4px')}>Verdedigen</div>
-                    {scSummary('verdedigen').map(s => (
-                      <div key={s.key} style={css('display:flex;justify-content:space-between;gap:var(--space-3);padding:3px 0;font-size:16px')}><span style={css('color:var(--color-neutral-700)')}>{s.role}</span><span>{s.names}</span></div>
-                    ))}
-                  </div>
-                  <div>
-                    <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-accent-700);padding-bottom:4px')}>Aanval</div>
-                    {scSummary('aanval').map(s => (
-                      <div key={s.key} style={css('display:flex;justify-content:space-between;gap:var(--space-3);padding:3px 0;font-size:16px')}><span style={css('color:var(--color-neutral-700)')}>{s.role}</span><span>{s.names}</span></div>
-                    ))}
-                  </div>
                 </div>
               </div>
+              ))}
 
               <div data-noprint={printOptions.speeltijd ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
                 <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Speeltijd deze wedstrijd</h3>
@@ -1581,6 +1805,93 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+
+              <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-6)')}>
+                <div>
+                  <div style={css('display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap')}>
+                    <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0 0 var(--space-1);font-weight:600')}>Strafcorner verdedigen</h3>
+                    <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} style={css('padding:2px 4px;font-size:14px')}
+                      onClick={() => patchMatch({ scOverrides: { ...(m.scOverrides || {}), verdedigen: {} } })}>Haal standaard op</button>
+                  </div>
+                  <p style={css('margin:0 0 var(--space-2);font-size:14px;color:var(--color-neutral-700)')}>Automatisch gevuld op basis van wie er voor deze wedstrijd is geselecteerd — is iemand niet geselecteerd (of valt tijdens de wedstrijd uit), kies dan hieronder een vervangster voor die plek.</p>
+                  <table className="table" style={css('max-width:900px')}>
+                    <thead><tr><th style={{ textAlign: 'left' }}>Rol</th><th>1e keus</th><th>2e keus</th><th>3e keus</th></tr></thead>
+                    <tbody>
+                      {scMatchRows('verdedigen').map(r => (
+                        <tr key={r.key}>
+                          <td style={{ textAlign: 'left' }}><div className="input" style={css('padding:6px 10px;min-width:140px;background:var(--color-neutral-200)')}>{r.role || 'Rol'}</div></td>
+                          {r.cells.map(c => (
+                            <td key={c.key}>
+                              <select className="input" disabled={matchLocked || readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:6px 10px')} value={c.value} onChange={c.onChange}>
+                                <option value="">—</option>
+                                {c.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                              </select>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div>
+                  <div style={css('display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap')}>
+                    <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0 0 var(--space-1);font-weight:600')}>Strafcorner aanval</h3>
+                    <button type="button" className="btn btn-ghost" disabled={matchLocked || readOnly} style={css('padding:2px 4px;font-size:14px')}
+                      onClick={() => patchMatch({ scOverrides: { ...(m.scOverrides || {}), aanval: {} } })}>Haal standaard op</button>
+                  </div>
+                  <table className="table" style={css('max-width:900px')}>
+                    <thead><tr><th style={{ textAlign: 'left' }}>Rol</th><th>1e keus</th><th>2e keus</th><th>3e keus</th></tr></thead>
+                    <tbody>
+                      {scMatchRows('aanval').map(r => (
+                        <tr key={r.key}>
+                          <td style={{ textAlign: 'left' }}><div className="input" style={css('padding:6px 10px;min-width:140px;background:var(--color-neutral-200)')}>{r.role || 'Rol'}</div></td>
+                          {r.cells.map(c => (
+                            <td key={c.key}>
+                              <select className="input" disabled={matchLocked || readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:6px 10px')} value={c.value} onChange={c.onChange}>
+                                <option value="">—</option>
+                                {c.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                              </select>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {[{ label: 'kwart 1 en 2', rows: scBlockRows.slice(0, 4), pagebreak: !!printOptions.wedstrijdschema }, { label: 'kwart 3 en 4', rows: scBlockRows.slice(4, 8), pagebreak: true }].map(half => (
+                <div key={half.label} data-noprint={printOptions.strafcorner ? undefined : '1'} data-pagebreak={half.pagebreak ? '1' : undefined} style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                  <div style={css('display:flex;align-items:center;gap:var(--space-3)')}>
+                    <img src="/hcrb.png" alt="HCRB" style={css('height:40px;width:auto')} />
+                    <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Strafcornerschema {half.label}</h3>
+                  </div>
+                  <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Per speelblok de hoogste keus per rol die op dat moment ook echt in het veld staat.</p>
+                  <table className="table" data-keeptogether="1">
+                    <thead>
+                      <tr><th style={{ textAlign: 'left' }}>Speelblok</th><th style={{ textAlign: 'left' }}>Verdedigen</th><th style={{ textAlign: 'left' }}>Aanval</th></tr>
+                    </thead>
+                    <tbody>
+                      {half.rows.map(r => (
+                        <tr key={r.key}>
+                          <td style={{ textAlign: 'left' }}>{r.label}</td>
+                          <td style={{ textAlign: 'left' }}>
+                            {r.verdedigen.map(x => (
+                              <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
+                            ))}
+                          </td>
+                          <td style={{ textAlign: 'left' }}>
+                            {r.aanval.map(x => (
+                              <div key={x.key} style={css('font-size:14px;padding:1px 0')}><span style={css('color:var(--color-neutral-700)')}>{x.role}: </span>{x.name}</div>
+                            ))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
 
               <div className="card elev-md" data-noprint="1" style={css('padding:var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
                 <span style={css('font-size:16px;max-width:60ch;text-wrap:pretty')}>Klaar met indelen? Sla het schema op — de eindstand vul je straks in bij Programma.</span>
@@ -1614,6 +1925,7 @@ export default function App() {
               <li>De as (posities in het midden) wordt met de sterkste speelsters bemand, gevolgd door rechts, dan links.</li>
               <li>Niveau (Pril t/m Uitblinkend) bepaalt de sterkte-afweging bij gelijke voorkeur.</li>
               <li>Iedereen krijgt zoveel mogelijk gelijke speeltijd; de sterkste speelsters iets meer, vanwege het beste team-effort.</li>
+              <li>Bij een volledige wedstrijd (geen uitvaller) verschilt het aantal speelblokken tussen twee veldspeelsters nooit meer dan 1.</li>
               <li>Handmatige aanpassingen kunnen altijd: klik op een naam in het schema voor alternatieven.</li>
             </ul>
           </div>
@@ -1654,19 +1966,26 @@ export default function App() {
           <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
             {fixtureRows.length ? '' : 'Nog geen wedstrijden voor ' + ownTeamName + '.'}
           </p>
+          {pastFixtureCount > 0 && (
+            <label style={css('display:flex;align-items:center;gap:6px;font-size:15px;cursor:pointer')}>
+              <input type="checkbox" checked={showPastFixtures} onChange={e => setShowPastFixtures(e.target.checked)} />
+              <span>Ook {pastFixtureCount} gespeelde wedstrijd{pastFixtureCount === 1 ? '' : 'en'} tonen</span>
+            </label>
+          )}
           <div style={{ overflowX: 'auto' }}>
             <table className="table" style={css('min-width:980px')}>
-              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Tijd</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th>Eindstand</th><th>Punten</th><th></th><th></th></tr></thead>
+              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th>Eindstand</th><th>Punten</th><th></th><th></th></tr></thead>
               <tbody>
-                {fixtureRows.map(f => (
+                {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
                     <td><input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px')} value={f.date} onChange={f.onDate} /></td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.day}</td>
-                    <td><input className="input" type="time" aria-label={`Tijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} /></td>
+                    <td><input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.verzameltijd} onChange={f.onVerzameltijd} /></td>
+                    <td><input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} disabled={readOnly} style={css('padding:4px 6px;width:110px')} value={f.time} onChange={f.onTime} /></td>
                     <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
-                      <span style={css(f.homeStyle)}>{f.homeName}</span>
+                      <span style={css(f.homeStyle)}>{f.homeName}{f.home ? ' ♥' : ''}</span>
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
-                      <span style={css(f.awayStyle)}>{f.awayName}</span>
+                      <span style={css(f.awayStyle)}>{f.awayName}{!f.home ? ' ♥' : ''}</span>
                       <div style={css('padding-top:3px')}><button type="button" disabled={readOnly} onClick={f.toggleFriendly} style={css(f.friendlyStyle)}>Oefenwedstrijd</button></div>
                     </td>
                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
@@ -1756,10 +2075,12 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pouleRows.map(r => (
-                      <tr key={r.name} style={r.name === lisaConfig?.teamName ? { fontWeight: 600 } : undefined}>
+                    {pouleRows.map(r => {
+                      const isOwnTeam = r.name === lisaConfig?.teamName || r.name === ownTeamName;
+                      return (
+                      <tr key={r.name} style={isOwnTeam ? { fontWeight: 600, color: 'var(--color-accent-700)' } : undefined}>
                         <td style={{ textAlign: 'center' }}>{r.position}</td>
-                        <td style={{ textAlign: 'left' }}>{r.name}</td>
+                        <td style={{ textAlign: 'left' }}>{r.name}{isOwnTeam ? ' ♥' : ''}</td>
                         <td style={{ textAlign: 'center' }}>{r.number_of_matches}</td>
                         <td style={{ textAlign: 'center' }}>{r.wins}</td>
                         <td style={{ textAlign: 'center' }}>{r.draws}</td>
@@ -1767,7 +2088,8 @@ export default function App() {
                         <td style={{ textAlign: 'center' }}>{r.goals_for}–{r.goals_against} ({r.goal_balance > 0 ? '+' : ''}{r.goal_balance})</td>
                         <td style={{ textAlign: 'center' }}>{r.points}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1837,7 +2159,7 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
           <div>
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Ouders</h2>
-            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per wedstrijd wie de pauzehap meeneemt en, bij uitwedstrijden, welke ouders rijden.</p>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Hier staat per wedstrijd wie de pauzehap meeneemt en, bij uitwedstrijden, welke ouders rijden.</p>
           </div>
           {pastOuderCount > 0 && (
             <label style={css('display:flex;align-items:center;gap:6px;font-size:15px;cursor:pointer')}>
@@ -1850,15 +2172,20 @@ export default function App() {
               <table className="table" style={css('white-space:nowrap')}>
                 <thead>
                   <tr>
-                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>📍 Waar</th>
-                    <th style={{ padding: '4px 6px' }}>📅 Datum</th>
-                    <th style={{ padding: '4px 6px' }}>⏰ Verzameltijd</th>
-                    <th style={{ padding: '4px 6px' }}>🏁 Start</th>
-                    <th style={{ padding: '4px 6px' }}>🥪 Pauzehap</th>
-                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 1</th>
-                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 2</th>
-                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 3</th>
-                    <th style={{ padding: '4px 6px' }}>🚗 Rijder 4</th>
+                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>Waar</th>
+                    <th style={{ padding: '4px 6px' }}>Datum</th>
+                    <th style={{ padding: '4px 6px' }}>
+                      <span style={css('display:inline-flex;align-items:center;gap:4px')}>
+                        Verzameltijd
+                        <InfoDot text="Verzameltijd kan alleen door de coach worden gewijzigd, onder Programma." />
+                      </span>
+                    </th>
+                    <th style={{ padding: '4px 6px' }}>Starttijd</th>
+                    <th style={{ padding: '4px 6px' }}>Pauzehap</th>
+                    <th style={{ padding: '4px 6px' }}>Rijder 1</th>
+                    <th style={{ padding: '4px 6px' }}>Rijder 2</th>
+                    <th style={{ padding: '4px 6px' }}>Rijder 3</th>
+                    <th style={{ padding: '4px 6px' }}>Rijder 4</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1866,12 +2193,8 @@ export default function App() {
                     <tr key={r.key}>
                       <td style={{ textAlign: 'left', padding: '4px 6px' }}>{r.waar}</td>
                       <td style={{ padding: '4px 6px' }}>{r.datum}</td>
-                      <td style={{ padding: '4px 6px' }}>
-                        <input className="input" aria-label={`Verzameltijd ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.verzameltijd} onChange={r.onVerzameltijd} />
-                      </td>
-                      <td style={{ padding: '4px 6px' }}>
-                        <input className="input" aria-label={`Start ${r.waar} ${r.datum}`} type="time" disabled={!canManageOuders} readOnly style={css('padding:4px 6px')} value={r.startTijd} />
-                      </td>
+                      <td style={{ padding: '4px 6px' }}>{r.verzameltijd || '—'}</td>
+                      <td style={{ padding: '4px 6px' }}>{r.startTijd || '—'}</td>
                       <td style={{ padding: '4px 6px' }}>
                         <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
                           <option value="">—</option>
@@ -1913,7 +2236,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                          {c.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
@@ -1936,7 +2259,7 @@ export default function App() {
                       <td key={c.key}>
                         <select className="input" disabled={readOnly} aria-label={`${r.role || 'Rol'} — keuze ${c.key + 1}`} style={css('padding:4px 6px')} value={c.value} onChange={c.onChange}>
                           <option value="">—</option>
-                          {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                          {c.options.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
                         </select>
                       </td>
                     ))}
