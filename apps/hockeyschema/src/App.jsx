@@ -363,7 +363,7 @@ export default function App() {
   const [injFrom, setInjFrom] = useState('2');
   const [fixtures, setFixtures] = useState([]);
   const [addFixtureOpen, setAddFixtureOpen] = useState(false);
-  const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, friendly: false });
+  const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [printOptions, setPrintOptions] = useState({ wedstrijdschema: true, strafcorner: false, speeltijd: false });
@@ -620,6 +620,8 @@ export default function App() {
             time: m.time || '',
             opponent: m.home_team_is_current ? m.away_team_name : m.home_team_name,
             home: !!m.home_team_is_current,
+            friendly: false,
+            competitie: competitionShortName,
           };
         });
       if (!rows.length) { setLisaError('Geen wedstrijden gevonden.'); return; }
@@ -632,8 +634,8 @@ export default function App() {
           const idx = idxByKey[r.date + '|' + r.opponent];
           if (idx == null) { added.push(r); return; }
           const existing = next[idx];
-          if (existing.time !== r.time || existing.home !== r.home) {
-            next[idx] = { ...existing, time: r.time, home: r.home };
+          if (existing.time !== r.time || existing.home !== r.home || existing.competitie !== r.competitie) {
+            next[idx] = { ...existing, time: r.time, home: r.home, competitie: r.competitie };
           }
         });
         return next.concat(added);
@@ -813,17 +815,20 @@ export default function App() {
 
   function openAddFixture() {
     if (readOnly) return;
-    setAddFixtureForm({ date: '', time: '', opponent: '', home: true, friendly: false });
+    setAddFixtureForm({ date: '', time: '', opponent: '', home: true });
     setAddFixtureError('');
     setAddFixtureOpen(true);
   }
 
+  // Handmatig toegevoegde wedstrijden zijn altijd oefenwedstrijden - een echte competitie-
+  // wedstrijd komt binnen via de LISA-import (die zet friendly:false en de korte
+  // competitienaam, zie importLisaMatches), dus hier is geen keuze meer nodig.
   function saveNewFixture() {
     if (readOnly) return;
     const f = addFixtureForm;
     if (!f.date || !f.opponent.trim()) { setAddFixtureError('Vul in elk geval datum en tegenstander in.'); return; }
     setFixtures(fs => fs.concat([{
-      id: 'f' + Date.now(), date: f.date, time: f.time, opponent: f.opponent.trim(), home: f.home, friendly: f.friendly
+      id: 'f' + Date.now(), date: f.date, time: f.time, opponent: f.opponent.trim(), home: f.home, friendly: true
     }]));
     setAddFixtureOpen(false);
   }
@@ -1310,6 +1315,13 @@ export default function App() {
     .sort((a, b) => a.id - b.id);
   const currentPouleRow = standings.find(r => r.is_current);
   const currentPouleId = currentPouleRow ? currentPouleRow.poule_id : (poules.length ? poules[poules.length - 1].id : null);
+  // Korte notatie voor bij geïmporteerde wedstrijden (bv. "voorcompetitie 4e klasse" i.p.v.
+  // de volledige "Meisjes O18 voorcompetitie 4e klasse") - de leeftijdscategorie staat er
+  // sowieso al overal bij (teamnaam, header), dus die hoeft hier niet herhaald te worden.
+  const currentPouleName = currentPouleRow ? currentPouleRow.poule_name : (poules.length ? poules[poules.length - 1].name : null);
+  const competitionShortName = currentPouleName
+    ? currentPouleName.replace(/^(Meisjes|Jongens|Dames|Heren)\s+[A-Za-z]*\d+\s+/i, '').trim()
+    : null;
   const effectivePouleId = selectedPouleId != null ? selectedPouleId : currentPouleId;
   const pouleRows = standings
     .filter(r => r.poule_id === effectivePouleId)
@@ -1339,9 +1351,11 @@ export default function App() {
       onGf: e => { if (readOnly) return; const v = e.target.value; upd({ gf: v }); setHistory(hs => hs.map(h => (h.date === f.date && h.opponent === f.opponent) ? { ...h, gf: v } : h)); },
       onGa: e => { if (readOnly) return; const v = e.target.value; upd({ ga: v }); setHistory(hs => hs.map(h => (h.date === f.date && h.opponent === f.opponent) ? { ...h, ga: v } : h)); },
       friendly: !!f.friendly,
-      toggleFriendly: () => upd({ friendly: !f.friendly }),
-      friendlyStyle: 'cursor:pointer;font-family:var(--font-body);font-size:13px;padding:2px 8px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-400);'
-        + (f.friendly ? 'background:var(--color-accent-2-100);color:var(--color-accent-2-800);border-color:var(--color-accent-2-400)' : 'background:transparent;color:var(--color-neutral-700)'),
+      // Type-kolom: oefenwedstrijden zijn altijd handmatig toegevoegd (geen keuze meer, zie
+      // saveNewFixture); een echte wedstrijd toont de korte competitienaam die bij het
+      // importeren is vastgelegd (zie importLisaMatches) - oudere imports van vóór die
+      // wijziging hebben nog geen competitie, die tonen dan gewoon "—".
+      type: f.friendly ? 'Oefenwedstrijd' : (f.competitie || '—'),
       points: (() => {
         if (f.friendly || f.gf === '' || f.gf == null || f.ga === '' || f.ga == null) return '—';
         const us = f.home ? Number(f.gf) : Number(f.ga);
@@ -2002,7 +2016,7 @@ export default function App() {
           )}
           <div style={{ overflowX: 'auto' }}>
             <table className="table" style={css('min-width:980px')}>
-              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th>Eindstand</th><th>Punten</th><th></th><th></th></tr></thead>
+              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th style={{ textAlign: 'left' }}>Type</th><th>Eindstand</th><th>Punten</th><th></th><th></th></tr></thead>
               <tbody>
                 {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
@@ -2014,8 +2028,8 @@ export default function App() {
                       <span style={css(f.homeStyle)}>{f.homeName}{f.home ? ' ♥' : ''}</span>
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
                       <span style={css(f.awayStyle)}>{f.awayName}{!f.home ? ' ♥' : ''}</span>
-                      <div style={css('padding-top:3px')}><button type="button" disabled={readOnly} onClick={f.toggleFriendly} style={css(f.friendlyStyle)}>Oefenwedstrijd</button></div>
                     </td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.type}</td>
                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                       {readOnly ? (f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—') : (
                         <>
@@ -2052,7 +2066,7 @@ export default function App() {
                   <label className="seg-opt"><input type="radio" name="afhome" checked={addFixtureForm.home} onChange={() => setAddFixtureForm(f => ({ ...f, home: true }))} /><span>Thuis</span></label>
                   <label className="seg-opt"><input type="radio" name="afhome" checked={!addFixtureForm.home} onChange={() => setAddFixtureForm(f => ({ ...f, home: false }))} /><span>Uit</span></label>
                 </div>
-                <label className="radio"><input type="checkbox" checked={addFixtureForm.friendly} onChange={e => setAddFixtureForm(f => ({ ...f, friendly: e.target.checked }))} /><span>Oefenwedstrijd</span></label>
+                <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700)')}>Handmatig toegevoegde wedstrijden zijn altijd oefenwedstrijden — een echte competitiewedstrijd komt binnen via "Importeer wedstrijden".</p>
                 {addFixtureError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{addFixtureError}</div>}
                 <div className="dialog-actions">
                   <button type="button" className="btn btn-ghost" onClick={() => setAddFixtureOpen(false)}>Annuleren</button>
