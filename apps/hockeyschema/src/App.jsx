@@ -2224,19 +2224,21 @@ export default function App() {
                       <td style={{ padding: '4px 6px' }}>{r.verzameltijd || '—'}</td>
                       <td style={{ padding: '4px 6px' }}>{r.startTijd || '—'}</td>
                       <td style={{ padding: '4px 6px' }}>
-                        <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
-                          <option value="">—</option>
-                          {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-                        </select>
+                        {canManageOuders ? (
+                          <select className="input" aria-label={`Pauzehap ${r.waar} ${r.datum}`} style={css('padding:4px 6px')} value={r.pauzehapId} onChange={r.onPauzehap}>
+                            <option value="">—</option>
+                            {r.pauzehapOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                          </select>
+                        ) : (r.pauzehapId ? nameOf(r.pauzehapId) : '—')}
                       </td>
                       {r.rijderSlots.map(s => (
                         <td key={s.key} style={{ padding: '4px 6px' }}>
-                          {s.active ? (
-                            <select className="input" aria-label={`Rijder ${s.key + 1} ${r.waar} ${r.datum}`} disabled={!canManageOuders} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
+                          {!s.active ? '—' : canManageOuders ? (
+                            <select className="input" aria-label={`Rijder ${s.key + 1} ${r.waar} ${r.datum}`} style={css('padding:4px 6px')} value={s.value} onChange={s.onChange}>
                               <option value="">—</option>
                               {s.options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
                             </select>
-                          ) : '—'}
+                          ) : (s.value ? nameOf(s.value) : '—')}
                         </td>
                       ))}
                     </tr>
