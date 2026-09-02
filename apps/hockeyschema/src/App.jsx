@@ -845,15 +845,19 @@ export default function App() {
   // bewust wél voor iedereen zichtbaar (ook uitgelogd) - dat is juist waar ouders zonder
   // account kunnen zien wie de pauzehap heeft en wie er rijdt.
   const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'teams'];
-  // Een manager (niet-admin) is geen coach-lid van het team en krijgt dus dezelfde tabs te zien
-  // als een uitgelogde bezoeker (Programma, Standen, Team, Ouders) - alleen bij Ouders heeft hij
-  // via canManageOuders daadwerkelijk bewerkrechten, de rest zou toch alleen de accessGate tonen.
-  const managerOnly = !!user && myRoleForCurrentTeam === 'manager' && !isAdmin;
+  // Iemand die voor het bekeken team geen coach (of admin) is - bv. manager van dit team,
+  // coach/manager van een ánder team dat nu even niet bekeken wordt, of nergens aan gekoppeld -
+  // krijgt dezelfde tabs te zien als een uitgelogde bezoeker (Programma, Standen, Team, Ouders).
+  // Teams blijft daarbij wél zichtbaar (los van limitedNav, zie de filter hieronder), zodat hij
+  // altijd naar een team kan wisselen waar hij wél coach/manager van is. Bij Ouders heeft een
+  // manager via canManageOuders nog daadwerkelijk bewerkrechten, de rest zou toch alleen de
+  // accessGate tonen.
+  const limitedNav = !!user && !isMyTeam;
   const tabs = [
     ['programma', 'Programma'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
     ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
-  ].filter(t => (user && !managerOnly) || !LOGGED_IN_ONLY_TABS.includes(t[0])).map(t => ({
+  ].filter(t => t[0] === 'teams' ? !!user : ((user && !limitedNav) || !LOGGED_IN_ONLY_TABS.includes(t[0]))).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
       + (tab === t[0]
@@ -2447,7 +2451,7 @@ export default function App() {
             </div>
           )}
 
-          {isMyTeam && (
+          {isAdmin && (
             <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
               <div className="card-title">Koppeling met clubwebsite — {ownTeamName}</div>
               {lisaConfig ? (
@@ -2487,7 +2491,7 @@ export default function App() {
             </div>
           )}
 
-          {isAdmin ? (
+          {isAdmin && (
             <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:420px')}>
               <div className="card-title">Nieuw team</div>
               <div className="field">
@@ -2502,10 +2506,6 @@ export default function App() {
                 catch (e) { setTeamError(e.message || 'Aanmaken mislukt.'); }
               }}>Team aanmaken</button>
             </div>
-          ) : (
-            <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>
-              {user ? 'Alleen beheerders kunnen nieuwe teams aanmaken.' : 'Log in als beheerder om een nieuw team aan te maken.'}
-            </p>
           )}
         </main>
       )}
