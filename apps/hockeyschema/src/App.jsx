@@ -2162,7 +2162,11 @@ export default function App() {
                       </td>
                     )}
                     {r.cells.map(c => (
-                      <td key={c.key} style={{ textAlign: 'center' }}><input className="input" type="number" min="1" max="9" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} disabled={readOnly} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} /></td>
+                      <td key={c.key} style={{ textAlign: 'center' }}>
+                        {readOnly ? (c.value || '—') : (
+                          <input className="input" type="number" min="1" max="9" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} />
+                        )}
+                      </td>
                     ))}
                     <td style={{ textAlign: 'center' }}><input type="checkbox" aria-label={`Vaste keeper: ${r.name}`} checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
