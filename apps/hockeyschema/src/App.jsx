@@ -2016,7 +2016,7 @@ export default function App() {
           )}
           <div style={{ overflowX: 'auto' }}>
             <table className="table" style={css('min-width:980px')}>
-              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th style={{ textAlign: 'left' }}>Type</th><th>Eindstand</th><th>Punten</th><th></th><th></th></tr></thead>
+              <thead><tr><th style={{ textAlign: 'left' }}>Datum</th><th style={{ textAlign: 'left' }}>Dag</th><th style={{ textAlign: 'left' }}>Verzameltijd</th><th style={{ textAlign: 'left' }}>Start</th><th style={{ textAlign: 'left' }}>Wedstrijd</th><th style={{ textAlign: 'left' }}>Type</th><th>Eindstand</th>{!readOnly && <><th>Punten</th><th></th><th></th></>}</tr></thead>
               <tbody>
                 {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
@@ -2039,9 +2039,13 @@ export default function App() {
                         </>
                       )}
                     </td>
-                    <td style={{ textAlign: 'center' }}>{f.points}</td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-secondary" disabled={readOnly} style={{ padding: '3px 10px' }} onClick={f.plan}>{f.planLabel}</button></td>
-                    <td style={{ textAlign: 'center', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.status} <button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={f.remove}>×</button></td>
+                    {!readOnly && (
+                      <>
+                        <td style={{ textAlign: 'center' }}>{f.points}</td>
+                        <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-secondary" style={{ padding: '3px 10px' }} onClick={f.plan}>{f.planLabel}</button></td>
+                        <td style={{ textAlign: 'center', color: 'var(--color-neutral-700)', whiteSpace: 'nowrap' }}>{f.status} <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={f.remove}>×</button></td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -2160,7 +2164,7 @@ export default function App() {
                   {isMyTeam && <th>Niveau</th>}
                   {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
                   <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
-                  <th></th>
+                  {!readOnly && <th></th>}
                 </tr>
               </thead>
               <tbody>
@@ -2183,7 +2187,7 @@ export default function App() {
                       </td>
                     ))}
                     <td style={{ textAlign: 'center' }}><input type="checkbox" aria-label={`Vaste keeper: ${r.name}`} checked={r.fixedKeeper} disabled={readOnly} onChange={r.onToggleFixedKeeper} /></td>
-                    <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>
+                    {!readOnly && <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>}
                   </tr>
                 ))}
               </tbody>
