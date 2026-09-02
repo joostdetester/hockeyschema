@@ -1,0 +1,496 @@
+<title>Beslissingenlog</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,500;0,700;0,800;1,600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --paper: #f3f6f1;
+    --panel: #ffffff;
+    --ink: #182019;
+    --ink-soft: #3c453e;
+    --slate: #5c6a60;
+    --line: #d7ddd3;
+    --turf: #2f6b4a;
+    --turf-ink: #1f4a33;
+    --turf-tint: #e4efe6;
+    --gold: #a3721f;
+    --gold-tint: #f6ecd8;
+    --blue: #35577c;
+    --blue-tint: #e6edf4;
+    --shadow: 0 1px 2px rgba(24,32,25,0.06), 0 8px 24px -16px rgba(24,32,25,0.25);
+    /* Masthead is a fixed brand band, not a theme-following surface - deliberately
+       constant across light/dark so it never redefines inside a themed block. */
+    --band: #1f4a33;
+    --band-line: rgba(255,255,255,0.16);
+    --band-chip: rgba(255,255,255,0.07);
+    --band-ink: #f2f7f2;
+    --band-eyebrow: #bfe0cc;
+    --band-lede: #d9ebdf;
+    --band-stat-label: #cfe6d8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0f1712;
+      --panel: #16211a;
+      --ink: #e9efe8;
+      --ink-soft: #c2cdc4;
+      --slate: #93a196;
+      --line: #263229;
+      --turf: #6fc396;
+      --turf-ink: #a9e2c1;
+      --turf-tint: #17281e;
+      --gold: #d8ab5c;
+      --gold-tint: #2a2213;
+      --blue: #8fb3da;
+      --blue-tint: #182432;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -18px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0f1712;
+    --panel: #16211a;
+    --ink: #e9efe8;
+    --ink-soft: #c2cdc4;
+    --slate: #93a196;
+    --line: #263229;
+    --turf: #6fc396;
+    --turf-ink: #a9e2c1;
+    --turf-tint: #17281e;
+    --gold: #d8ab5c;
+    --gold-tint: #2a2213;
+    --blue: #8fb3da;
+    --blue-tint: #182432;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -18px rgba(0,0,0,0.6);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  ::selection { background: var(--turf-tint); color: var(--turf-ink); }
+
+  a { color: var(--turf-ink); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--turf); outline-offset: 2px; }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---- masthead ---- */
+  header.masthead {
+    background: var(--band);
+    color: var(--band-ink);
+    padding: 46px 24px 40px;
+  }
+  .masthead-inner { max-width: 860px; margin: 0 auto; }
+  .eyebrow {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--band-eyebrow);
+    margin: 0 0 10px;
+  }
+  h1.title {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 800;
+    font-style: italic;
+    font-size: clamp(34px, 5.4vw, 50px);
+    line-height: 1.02;
+    letter-spacing: -0.01em;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  .masthead p.lede {
+    margin: 0;
+    max-width: 60ch;
+    color: #d9ebdf;
+    font-size: 17px;
+  }
+  .stat-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 28px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 3px;
+    padding: 9px 14px;
+  }
+  .stat b {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+  }
+  .stat span {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6d8;
+  }
+
+  /* ---- toc ---- */
+  nav.toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    margin: 34px 0 0;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+  }
+  nav.toc a {
+    color: var(--slate);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+  nav.toc a:hover { color: var(--turf-ink); border-bottom-color: var(--turf); }
+
+  /* ---- page sections ---- */
+  section.page { margin-top: 56px; }
+  section.page:first-of-type { margin-top: 44px; }
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    border-bottom: 3px solid var(--ink);
+    padding-bottom: 10px;
+    margin-bottom: 22px;
+  }
+  .page-head h2 {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 800;
+    font-size: 27px;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .page-head .where {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--slate);
+    letter-spacing: 0.02em;
+  }
+
+  h3.sub {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--turf-ink);
+    margin: 30px 0 12px;
+  }
+  h3.sub:first-child { margin-top: 0; }
+
+  /* ---- entries ---- */
+  .entry {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 18px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+  }
+  .entry:last-child { padding-bottom: 4px; }
+  .tag {
+    justify-self: start;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    padding: 3px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+    height: fit-content;
+  }
+  .tag.nieuw { background: var(--turf-tint); color: var(--turf-ink); }
+  .tag.wijziging { background: var(--blue-tint); color: var(--blue); }
+  .tag.bugfix { background: var(--gold-tint); color: var(--gold); }
+
+  .entry h4 {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 700;
+    font-style: italic;
+    font-size: 17px;
+    margin: 0 0 5px;
+    color: var(--ink);
+  }
+  .entry p { margin: 0; color: var(--ink-soft); }
+  .entry p + p { margin-top: 8px; }
+  .entry code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.86em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 1px 5px;
+  }
+  .entry .why {
+    margin-top: 8px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+    color: var(--slate);
+    font-size: 15.5px;
+  }
+
+  @media (max-width: 560px) {
+    .entry { grid-template-columns: 1fr; gap: 6px; }
+  }
+
+  footer {
+    max-width: 860px;
+    margin: 64px auto 0;
+    padding: 20px 24px 0;
+    border-top: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--slate);
+  }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Hockeyschema · HCRB MO18-2</p>
+    <h1 class="title">Beslissingenlog</h1>
+    <p class="lede">Functionele keuzes gemaakt tijdens de ontwikkelsessie van 2026‑09‑01/02, geordend per pagina van de app — van speeltijdverdeling tot printlay-out.</p>
+    <div class="stat-row">
+      <div class="stat"><b>9</b><span>Nieuw</span></div>
+      <div class="stat"><b>8</b><span>Wijziging</span></div>
+      <div class="stat"><b>4</b><span>Bugfix</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <nav class="toc">
+    <a href="#wedstrijdschema">Wedstrijdschema</a>
+    <a href="#strafcorner">Strafcorner</a>
+    <a href="#programma">Programma</a>
+    <a href="#print">Print</a>
+  </nav>
+
+  <section class="page" id="wedstrijdschema">
+    <div class="page-head">
+      <h2>Wedstrijdschema</h2>
+      <span class="where">tab · wedstrijd</span>
+    </div>
+
+    <h3 class="sub">Speeltijdverdeling</h3>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Max. 1 speelblok verschil</h4>
+        <p>Bij een volledige wedstrijd (geen uitvaller) mogen twee veldspeelsters nooit meer dan 1 speelblok van elkaar verschillen. Wordt na het genereren afgedwongen (<code>enforceFairness</code>), met behoud van de garantie dat wie de 1e helft van een kwart zit, gegarandeerd de 2e helft speelt.</p>
+        <p class="why">Aanleiding: bij "Zwakke tegenstander" kreeg een speelster met een hoger sterktegewicht toch minder speelblokken dan sterkere teamgenoten — de correctieronde op voorkeurspositie ruilde haar er meermaals uit.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Sterk / zwak / standaard blijft apart</h4>
+        <p>De bestaande drie-keuze voor sterkte-gewicht blijft ongewijzigd naast de nieuwe Positietoewijzing-toggles hieronder, in plaats van erin opgenomen te worden.</p>
+      </div>
+    </div>
+
+    <h3 class="sub">Positietoewijzing — drie nieuwe schuifjes</h3>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Zone-sterkte, Continuïteit, Correctieronde op voorkeur</h4>
+        <p>Drie losse aan/uit-schuifjes (groen = aan, rood = uit), elk met een hover-only info-icoon en een tekst die met "Meer kans op …" begint zodra de schuif aan staat. <strong>Zone-sterkte</strong>: de as krijgt bij voorkeur de sterkste speelsters. <strong>Continuïteit</strong>: voorkeur om op dezelfde positie te blijven staan als het vorige blok. <strong>Correctieronde op voorkeur</strong>: ruilt iemand zonder voorkeur voor haar positie met een bankspeelster die dat wél heeft — kan de max‑1‑regel hierboven overrulen.</p>
+        <p class="why">Alle drie staan standaard aan, zodat bestaand gedrag ongewijzigd blijft tenzij bewust uitgezet.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Continuïteit-tekst herzien</h4>
+        <p>"Meer/Minder kans op dezelfde positie als vorig blok" in plaats van een tekst over "wisselingen" — zodat alle drie schuifjes dezelfde richting hanteren: aan = meer.</p>
+      </div>
+    </div>
+
+    <h3 class="sub">Selectie &amp; Stap 2</h3>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>"Iedereen selecteren" gesplitst</h4>
+        <p>Twee knoppen in plaats van één: <strong>Vaste spelers selecteren</strong> en <strong>Ook invallers selecteren</strong>, zodat het verschil expliciet is.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Vaste keeper automatisch ingevuld</h4>
+        <p>Zodra de vaste keeper in de selectie zit en er nog geen keeper gekozen is voor deze wedstrijd, vult Stap 2 zich vanzelf. Een handmatig gekozen keeper wordt nooit overschreven.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Melding bij verouderd schema</h4>
+        <p>Wijzig je de selectie nadat het schema al gemaakt is, dan verschijnt een melding dat het schema opnieuw gemaakt moet worden. Het bestaande schema blijft staan tot je zelf op de knop klikt — knoptekst blijft bewust <strong>"Schema opnieuw maken"</strong>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="strafcorner">
+    <div class="page-head">
+      <h2>Strafcorner</h2>
+      <span class="where">onder wedstrijdschema + seizoenspagina</span>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Bewerkbaar in plaats van alleen-lezen</h4>
+        <p>Elke rol (1e / 2e / 3e keus) is nu een dropdown i.p.v. platte tekst, automatisch gevuld vanuit de seizoensvolgorde maar alleen met spelers die voor déze wedstrijd geselecteerd én niet uitgevallen zijn.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Automatisch opschuiven</h4>
+        <p>Een wegvallende speler (niet geselecteerd, of tijdens de wedstrijd geblesseerd) wordt uit de rij gefilterd i.p.v. alleen leeggemaakt — de 2e keus wordt dan vanzelf de 1e.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag bugfix">bugfix</span>
+      <div>
+        <h4>Geen dubbele speler binnen één rol</h4>
+        <p>Een speler die al bij een andere keuze van dezelfde rol staat, verdwijnt uit de opties van de overige keuzes — in zowel de wedstrijd- als de seizoenstabel.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Per-wedstrijd override, seizoen blijft intact</h4>
+        <p>Handmatige aanpassingen gelden alleen voor deze wedstrijd (<code>scOverrides</code>); de volgende wedstrijd begint weer bij de seizoensvolgorde. Een <strong>"Haal standaard op"</strong>-link per groep wist eigen aanpassingen voor die groep.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Visuele stijl gelijk aan seizoenstabel</h4>
+        <p>Rol in grijs vak, kolommen 1e/2e/3e keus — enige verschil: de rolnaam is hier niet bewerkbaar.</p>
+      </div>
+    </div>
+
+    <h3 class="sub">Strafcornerschema — nieuw overzicht</h3>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Per speelblok wie de rol echt uitvoert</h4>
+        <p>8 rijen (1e/2e helft per kwart) tonen de hoogste keus per rol die op dat moment ook echt in het veld staat.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag bugfix">bugfix</span>
+      <div>
+        <h4>Rollen in volgorde toegekend</h4>
+        <p>Eén speler kan niet voor twee rollen tegelijk in hetzelfde blok worden ingezet — wie al aan een eerdere rol is toegewezen, valt af bij de volgende, die dan naar haar eigen 2e of 3e keus kijkt.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="programma">
+    <div class="page-head">
+      <h2>Programma</h2>
+      <span class="where">importeer wedstrijden · LISA</span>
+    </div>
+
+    <div class="entry">
+      <span class="tag bugfix">bugfix</span>
+      <div>
+        <h4>Tijdswijzigingen werden genegeerd</h4>
+        <p>Een al bestaande wedstrijd (zelfde datum + tegenstander) werd bij hernieuwde import overgeslagen, ook als de tijd of thuis/uit inmiddels gewijzigd was — vandaar dat alleen "verwijderen en opnieuw importeren" werkte.</p>
+        <p class="why">Nu wordt de bestaande rij bijgewerkt met de nieuwe tijd/thuis-uit, met behoud van zijn eigen <code>id</code> en dus van gekoppelde schema's.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="print">
+    <div class="page-head">
+      <h2>Print</h2>
+      <span class="where">printdialoog + paginalay-out</span>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Printoptie "Wedstrijdschema"</h4>
+        <p>Naast Strafcorner en Speeltijd, standaard aangevinkt zodat bestaand gedrag hetzelfde blijft tenzij je hem uitzet.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Geen app-header meer op de afdruk</h4>
+        <p>Het bovenste blok (logo, titel, "TEGEN … · 4 × 17.5 MIN") print niet meer — de wedstrijdtitel leeft voort in de nieuwe kop-per-pagina hieronder.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag nieuw">nieuw</span>
+      <div>
+        <h4>Wedstrijdschema en Strafcornerschema splitsen elk in 2 pagina's</h4>
+        <p>Kwart 1+2 op de eerste, kwart 3+4 op de tweede. Elke pagina krijgt een eigen kop: HCRB-logo + titel (bv. "Wedstrijdschema kwart 1 en 2"), met daaronder klein de wedstrijddetails — team, datum, tijd.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag bugfix">bugfix</span>
+      <div>
+        <h4>Geen onbedoelde lege eerste pagina</h4>
+        <p>Een paginabreuk vóór een blok wordt alleen ingezet als er al content aan voorafgaat op die afdruk — anders levert een breuk vóór het allereerste element een lege pagina op.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Strafcorner-bewerktabellen printen nooit meer</h4>
+        <p>Ook niet met de Strafcorner-printoptie aan — alleen het Strafcornerschema (per-blok overzicht) print nog.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <span class="tag wijziging">wijziging</span>
+      <div>
+        <h4>Watermerk print niet meer</h4>
+        <p>Het HCRB-logo op de achtergrond blijft op het scherm zichtbaar, maar verdwijnt uit de afdruk.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  Hockeyschema · apps/hockeyschema/src/App.jsx · sessie 2026‑09‑01/02
+</footer>

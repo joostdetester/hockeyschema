@@ -7,6 +7,8 @@ input[type="number"] { -moz-appearance: textfield; }
   body { background: #fff; }
   [data-sheet] { padding: 0 !important; }
   [data-halfcard] { break-inside: avoid; }
+  [data-keeptogether] { break-inside: avoid; }
+  [data-pagebreak] { break-before: page; }
   /* On screen the position blocks are told apart by their (colored) background fill
      alone - printers commonly skip background colors by default, so give every block
      an explicit border for print regardless of what its on-screen background/border was. */
