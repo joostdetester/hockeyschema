@@ -3,6 +3,7 @@ import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, serverTimestamp
 import { db } from './firebase.js';
 import { useAuth } from './AuthContext.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
+import { DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 
 const TeamCtx = createContext(null);
 
@@ -10,7 +11,8 @@ const BLANK_PUBLIC_STATE = {
   players: [],
   sc: DEFAULT_SC,
   fixtures: [],
-  match: { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null },
+  match: { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null, notes: [] },
+  noteCategories: DEFAULT_NOTE_CATEGORIES,
 };
 
 function slugify(name) {
