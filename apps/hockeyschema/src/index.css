@@ -2,10 +2,6 @@ html, body { margin: 0; padding: 0; background: var(--color-bg); }
 a { color: var(--color-accent-700); text-decoration: none; }
 a:hover { color: var(--color-accent-2-700); }
 input[type="number"] { -moz-appearance: textfield; }
-/* Hoofdnavigatie: op smalle schermen swipe je 'm opzij i.p.v. dat de tabbladen naar een tweede
-   regel omklappen - de scrollbalk zelf blijft verborgen (swipen/vegen is duidelijk genoeg). */
-.hscroll-tabs { scrollbar-width: none; -ms-overflow-style: none; }
-.hscroll-tabs::-webkit-scrollbar { display: none; }
 /* Twee losse navigatie-indelingen (zie App.jsx: .nav-desktop/.nav-mobile) - bewust een andere
    indeling per schermbreedte i.p.v. één indeling die overal hetzelfde is, dus puur op CSS-breedte
    geschakeld i.p.v. met JS. !important nodig om de inline display:flex van elke <nav> te winnen. */

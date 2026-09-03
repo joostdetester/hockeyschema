@@ -1105,41 +1105,46 @@ export default function App() {
   const desktopMoreTabs = isMyTeam ? tabs.filter(t => COACH_MORE_KEYS.includes(t.key)) : [];
   const desktopMoreMenuActive = desktopMoreTabs.some(t => t.key === tab);
   //
-  // Mobiel: geldt voor iedereen (ook de kortere navigatie voor ouders/uitgelogde bezoekers) - ook
-  // die lijst bleek op een telefoon niet op één regel te passen. "Programma" staat apart vooraan
-  // en "Meer" komt daar direct achter (zie render), zodat je 'm meteen ziet zonder te swipen.
-  // "Teams" blijft voor wie geen coach van dít team is buiten Meer - die moet altijd makkelijk
-  // naar een team kunnen wisselen waar hij dat wél is.
-  const MOBILE_MORE_KEYS = isMyTeam ? COACH_MORE_KEYS : ['verslagen'];
-  const mobilePrimaryTabs = tabs.filter(t => !MOBILE_MORE_KEYS.includes(t.key));
-  const mobileMoreTabs = tabs.filter(t => MOBILE_MORE_KEYS.includes(t.key));
+  // Mobiel: alleen Programma en Standen blijven los zichtbaar, alle overige tabbladen (ook
+  // Wedstrijdschema/Team/Ouders/Live, die op desktop wél los staan) gaan achter "Meer" - geldt
+  // voor iedereen, ook de kortere navigatie voor ouders/uitgelogde bezoekers.
+  const MOBILE_PRIMARY_KEYS = ['programma', 'standen'];
+  const mobilePrimaryTabs = tabs.filter(t => MOBILE_PRIMARY_KEYS.includes(t.key));
+  const mobileMoreTabs = tabs.filter(t => !MOBILE_PRIMARY_KEYS.includes(t.key));
   const mobileMoreMenuActive = mobileMoreTabs.some(t => t.key === tab);
-  const programmaTab = mobilePrimaryTabs.find(t => t.key === 'programma');
-  const restMobilePrimaryTabs = mobilePrimaryTabs.filter(t => t.key !== 'programma');
 
   // Gedeeld door de desktop- en mobiele navigatie hieronder - scheelt dat de "Meer"-dialoog twee
   // keer moet worden uitgeschreven. Beide varianten delen ook dezelfde moreMenuOpen-state (er is
   // toch maar één van de twee tegelijk zichtbaar, dus dat kan geen kwaad).
-  const moreMenuButton = (items, active, refObj) => items.length > 0 && (
-    <div ref={refObj} style={css('position:relative;flex:0 0 auto')}>
-      <button type="button" onClick={() => setMoreMenuOpen(v => !v)}
-        style={css('background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
-          + (active ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600' : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400'))}>
-        Meer {moreMenuOpen ? '▴' : '▾'}
-      </button>
-      {moreMenuOpen && (
-        <div style={css('position:absolute;top:100%;left:0;margin-top:4px;min-width:180px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);padding:6px;display:flex;flex-direction:column;z-index:40')}>
-          {items.map(t => (
-            <button key={t.key} type="button" onClick={() => { t.go(); setMoreMenuOpen(false); }}
-              style={css('text-align:left;background:none;border:none;padding:8px 10px;border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-body);font-size:15px;white-space:nowrap;'
-                + (tab === t.key ? 'color:var(--color-text);font-weight:600;background:var(--color-neutral-100)' : 'color:var(--color-neutral-700);font-weight:400'))}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  const moreMenuButton = (items, active, refObj) => {
+    if (!items.length) return false;
+    // "Live" verdwijnt in de lijst achter Meer zonder z'n gebruikelijke rode, opvallende styling
+    // (die anders altijd meldt dat er nu een wedstrijd bezig is) - de Meer-knop zelf licht daarom
+    // rood op zolang dat item erin zit, ongeacht welk tabblad je op dat moment bekijkt.
+    const hasLive = items.some(t => t.key === 'live');
+    return (
+      <div ref={refObj} style={css('position:relative;flex:0 0 auto')}>
+        <button type="button" onClick={() => setMoreMenuOpen(v => !v)}
+          style={css('background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
+            + (hasLive
+              ? 'color:#c23b3b;font-weight:700;' + (active ? 'border-bottom:3px solid #c23b3b' : 'border-bottom:3px solid transparent')
+              : (active ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600' : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400')))}>
+          Meer {moreMenuOpen ? '▴' : '▾'}
+        </button>
+        {moreMenuOpen && (
+          <div style={css('position:absolute;top:100%;left:0;margin-top:4px;min-width:180px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);padding:6px;display:flex;flex-direction:column;z-index:40')}>
+            {items.map(t => (
+              <button key={t.key} type="button" onClick={() => { t.go(); setMoreMenuOpen(false); }}
+                style={css('text-align:left;background:none;border:none;padding:8px 10px;border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-body);font-size:15px;white-space:nowrap;'
+                  + (t.key === 'live' ? 'color:#c23b3b;font-weight:700;' : (tab === t.key ? 'color:var(--color-text);font-weight:600;background:var(--color-neutral-100)' : 'color:var(--color-neutral-700);font-weight:400')))}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const sel = m.selected || [];
   const selectionChips = players.map(p => {
@@ -2558,14 +2563,11 @@ export default function App() {
               {desktopPrimaryTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
               {moreMenuButton(desktopMoreTabs, desktopMoreMenuActive, desktopMoreMenuRef)}
             </nav>
-            {/* Mobiel: Programma + Meer meteen zichtbaar (geen swipen nodig om Meer te bereiken),
-                de rest van de tabbladen swipebaar in een eigen scrollstrook. */}
+            {/* Mobiel: alleen Programma, Standen en Meer - past altijd op één regel, geen
+                swipen/scrollen nodig. */}
             <nav data-noprint="1" className="nav-mobile" style={css('display:flex;align-items:center;gap:var(--space-3);padding-top:var(--space-1);min-width:0')}>
-              {programmaTab && <button type="button" onClick={programmaTab.go} style={css(programmaTab.style + ';white-space:nowrap;flex:0 0 auto')}>{programmaTab.label}</button>}
+              {mobilePrimaryTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style + ';white-space:nowrap;flex:0 0 auto')}>{t.label}</button>)}
               {moreMenuButton(mobileMoreTabs, mobileMoreMenuActive, mobileMoreMenuRef)}
-              <div className="hscroll-tabs" style={css('display:flex;gap:var(--space-4);overflow-x:auto;min-width:0')}>
-                {restMobilePrimaryTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style + ';white-space:nowrap;flex:0 0 auto')}>{t.label}</button>)}
-              </div>
             </nav>
           </>
         )}
