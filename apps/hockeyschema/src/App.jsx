@@ -7,6 +7,7 @@ import { useAuth } from './AuthContext.jsx';
 import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
+import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 
 function css(str) {
   const obj = {};
@@ -122,11 +123,26 @@ const C_IN = '#1c6b3d';
 const C_MOVE = 'var(--color-accent-700)';
 const C_IN_BG = '#e7f1ea';
 const C_MOVE_BG = 'var(--color-accent-100)';
+// Zelfde iconen als de fullscreen-toggle bij videospelers - vier hoek-haakjes die naar buiten
+// wijzen om volledig scherm te activeren, naar binnen om het te verlaten.
+const ICON_FULLSCREEN = 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z';
+const ICON_FULLSCREEN_EXIT = 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z';
 
 // Invallers kunnen dezelfde voornaam hebben als een vaste speelster - overal waar alleen de
 // voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
 // blijven.
 function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
+
+// Klein rond knopje op een schemacel om een notitie toe te voegen - toont een stipje/aantal
+// zodra er al aantekeningen voor die speler in dat kwart bestaan (rood als er een werkpunt
+// bij zit, anders groen), zodat je in één oogopslag ziet waar al iets genoteerd is.
+function noteDotStyle(badge) {
+  const bg = !badge ? 'var(--color-neutral-100)' : badge.hasNeg ? C_OUT : C_IN;
+  const color = !badge ? 'var(--color-neutral-700)' : '#fff';
+  return 'width:16px;height:16px;min-width:16px;border-radius:50%;border:1px solid var(--color-neutral-400);'
+    + 'background:' + bg + ';color:' + color + ';font-size:10px;line-height:1;padding:0;cursor:pointer;'
+    + 'display:inline-flex;align-items:center;justify-content:center;';
+}
 
 function InfoDot({ text }) {
   return (
@@ -354,7 +370,7 @@ const supNum = n => String(n).split('').map(c => SUP[+c] || '').join('');
 const GRID_ORDER = ['LV', 'SP', 'RV', 'LH', 'MM', 'RH', 'VS', 'LA', 'LM', 'RA'];
 const CELL = 'flex:0 0 31%;min-width:0;padding:5px 7px;border-radius:var(--radius-md);text-align:center;';
 
-const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null };
+const BLANK_MATCH = { opponent: '', date: '', keeperId: '', selected: [], injuries: {}, schedule: null, notes: [] };
 
 export default function App() {
   const { user, myTeams, role, isAdmin, logout } = useAuth();
@@ -375,11 +391,17 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
-  const [printOptions, setPrintOptions] = useState({ wedstrijdschema: true, strafcorner: false, speeltijd: false });
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const desktopMoreMenuRef = useRef(null);
+  const mobileMoreMenuRef = useRef(null);
+  const [printOptions, setPrintOptions] = useState({ wedstrijdschema: true, strafcorner: false, speeltijd: false, notities: false });
   const [history, setHistory] = useState([]);
   const [match, setMatch] = useState(BLANK_MATCH);
   const [editing, setEditing] = useState(null);
   const [relocating, setRelocating] = useState(null);
+  const [noteCategories, setNoteCategories] = useState(DEFAULT_NOTE_CATEGORIES);
+  const [noteEditor, setNoteEditor] = useState(null);
+  const [notesFilterPlayer, setNotesFilterPlayer] = useState('');
   const [loadedTeamId, setLoadedTeamId] = useState(null);
   const [historyLoadedTeamId, setHistoryLoadedTeamId] = useState(null);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -418,6 +440,23 @@ export default function App() {
   const [matchMode, setMatchMode] = useState(() => {
     try { return window.localStorage.getItem('hockeyschema.matchMode') === '1'; } catch { return false; }
   });
+  // Volledig scherm - handig op een tablet/2-in-1 met toetsenbord ingeklapt, zodat de
+  // browserbalken niet onnodig schermruimte innemen. Los bijgehouden (i.p.v. alleen de knoptekst
+  // op aanname te zetten) omdat de gebruiker ook via Esc of de browser zelf kan uitstappen -
+  // dan moet de knoptekst vanzelf weer "Volledig scherm" tonen.
+  const [isFullscreen, setIsFullscreen] = useState(() => !!document.fullscreenElement);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  }
   // Puur lokale tik voor het live aftellen (elke kijker rekent zelf door op basis van het
   // gesynchroniseerde endAt-tijdstip in m.clocks - zie hieronder) - wordt nooit weggeschreven.
   const [timerNow, setTimerNow] = useState(() => Date.now());
@@ -426,6 +465,7 @@ export default function App() {
   // van het signaal in kwart 1 het signaal in kwart 3 ook onterecht onderdrukken.
   const [alertDismissedByQuarter, setAlertDismissedByQuarter] = useState({});
   const [scorerPicker, setScorerPicker] = useState(false);
+  const [scorerSelected, setScorerSelected] = useState(null);
   const [goalRemark, setGoalRemark] = useState('');
   const [themGoalDialog, setThemGoalDialog] = useState(false);
   const [commentDialog, setCommentDialog] = useState(false);
@@ -457,6 +497,14 @@ export default function App() {
   // bewust géén coach, die krijgt hier geen extra rechten via isMyTeam.
   const canManageOuders = isAdmin || myRoleForCurrentTeam === 'manager';
 
+  // Volledig scherm is alleen zinvol tijdens de wedstrijd (de knop is alleen zichtbaar in
+  // wedstrijdmodus, zie de header) - verlaat je wedstrijdmodus (of raak je isMyTeam kwijt)
+  // terwijl je nog in volledig scherm zit, dan sluit dat vanzelf mee af, anders zou je zonder
+  // knop vastzitten (Esc werkt dan nog wel, maar dit is netter).
+  useEffect(() => {
+    if (!(matchMode && isMyTeam) && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  }, [matchMode, isMyTeam]);
+
   const publicSyncRef = useRef('');
   const managerFixturesSyncRef = useRef('');
   const historySyncRef = useRef('');
@@ -472,13 +520,14 @@ export default function App() {
     managerFixturesSyncRef.current = '';
     const unsub = onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'public'), snap => {
       const d = snap.data() || {};
-      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null });
+      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null, noteCategories: d.noteCategories });
       managerFixturesSyncRef.current = JSON.stringify(d.fixtures || []);
       setPlayers(d.players || []);
       setSc(d.sc || { verdedigen: [], aanval: [] });
       setFixtures(d.fixtures || []);
       setMatch(d.match || BLANK_MATCH);
       setStandings(d.standings || []);
+      setNoteCategories(d.noteCategories || DEFAULT_NOTE_CATEGORIES);
       setStandingsUpdatedAt(d.standingsUpdatedAt || null);
       setLoadedTeamId(currentTeamId);
     }, () => setLoadedTeamId(currentTeamId));
@@ -487,12 +536,12 @@ export default function App() {
 
   useEffect(() => {
     if (loadedTeamId !== currentTeamId || readOnly || !currentTeamId) return;
-    const blob = { players, sc, fixtures, match, standings, standingsUpdatedAt };
+    const blob = { players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories };
     const json = JSON.stringify(blob);
     if (json === publicSyncRef.current) return;
     publicSyncRef.current = json;
     setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), blob).catch(() => {});
-  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt]);
+  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories]);
 
   // Managers zijn geen coach (isMyTeam/readOnly geldt niet voor ze), dus de blob-sync
   // hierboven slaat voor hen over - maar ze mogen wél de Ouders-indeling (fixtures)
@@ -719,11 +768,59 @@ export default function App() {
     try { window.localStorage.setItem('hockeyschema.matchMode', matchMode ? '1' : '0'); } catch { /* localStorage niet beschikbaar */ }
   }, [matchMode]);
 
+  // Esc sluit het bovenste open dialoogje - één centrale listener i.p.v. er eentje per dialoog,
+  // zodat elk nieuw dialoogje dit gratis meekrijgt. Volgorde maakt in de praktijk niet uit (er
+  // staat normaal maar één dialoog tegelijk open), maar staat hier van "meest recent toegevoegd"
+  // naar oud zodat een nieuw dialoog dat per ongeluk over een ander dialoog heen zou vallen wint.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key !== 'Escape') return;
+      if (noteEditor) { setNoteEditor(null); return; }
+      if (relocating) { setRelocating(null); return; }
+      if (editing) { setEditing(null); return; }
+      if (printDialogOpen) { setPrintDialogOpen(false); return; }
+      if (addFixtureOpen) { setAddFixtureOpen(false); return; }
+      if (scorerPicker) { setScorerPicker(false); setScorerSelected(null); setGoalRemark(''); return; }
+      if (themGoalDialog) { setThemGoalDialog(false); return; }
+      if (commentDialog) { setCommentDialog(false); setCommentText(''); return; }
+      if (editEntryIdx != null) { setEditEntryIdx(null); return; }
+      if (endMatchConfirm) { setEndMatchConfirm(false); return; }
+      if (moreMenuOpen) { setMoreMenuOpen(false); return; }
+      // Extra vangnet: de browser zou Esc al zelf moeten afhandelen zolang je in volledig scherm
+      // zit, maar dat bleek niet altijd te gebeuren - dus hier expliciet ook nog geprobeerd.
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [noteEditor, relocating, editing, printDialogOpen, addFixtureOpen, scorerPicker, themGoalDialog, commentDialog, editEntryIdx, endMatchConfirm, moreMenuOpen]);
+
+  // Klikken buiten het "Meer"-afrolmenu sluit het - net als bij een gewone <select>, geen tweede
+  // klik nodig om 'm daarna weer te kunnen openen.
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    function onDocClick(e) {
+      if (desktopMoreMenuRef.current && desktopMoreMenuRef.current.contains(e.target)) return;
+      if (mobileMoreMenuRef.current && mobileMoreMenuRef.current.contains(e.target)) return;
+      setMoreMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [moreMenuOpen]);
+
   function fmtTimer(ms) {
     const total = Math.ceil(ms / 1000);
     const mm = Math.floor(total / 60);
     const ss = total % 60;
     return mm + ':' + String(ss).padStart(2, '0');
+  }
+
+  // Zelfde als fmtTimer, maar met voorloopnul op de minuten - nodig als waarde voor het
+  // <input type="time">-veld hieronder, dat een genormaliseerde "MM:SS" verwacht.
+  function fmtTimerPadded(ms) {
+    const total = Math.ceil(ms / 1000);
+    const mm = Math.floor(total / 60);
+    const ss = total % 60;
+    return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
   }
 
   // Eenmalige migratie: zodra de eerste admin inlogt en er nog geen teams bestaan, wordt het
@@ -735,14 +832,15 @@ export default function App() {
       try {
         const id = 'hcrb-mo18-2';
         if ((await getDoc(doc(db, 'teams', id))).exists()) return;
-        let seed = { players: DEFAULT_PLAYERS, sc: DEFAULT_SC, fixtures: DEFAULT_FIXTURES, match: BLANK_MATCH };
+        let seed = { players: DEFAULT_PLAYERS, sc: DEFAULT_SC, fixtures: DEFAULT_FIXTURES, match: BLANK_MATCH, noteCategories: DEFAULT_NOTE_CATEGORIES };
         let seedHistory = DEFAULT_HISTORY;
         const raw = window.localStorage.getItem(KEY);
         if (raw) {
           const d = JSON.parse(raw);
           seed = {
             players: d.players || DEFAULT_PLAYERS, sc: d.sc || DEFAULT_SC,
-            fixtures: d.fixtures || DEFAULT_FIXTURES, match: d.match || BLANK_MATCH
+            fixtures: d.fixtures || DEFAULT_FIXTURES, match: d.match || BLANK_MATCH,
+            noteCategories: d.noteCategories || DEFAULT_NOTE_CATEGORIES
           };
           seedHistory = d.history || DEFAULT_HISTORY;
         }
@@ -766,6 +864,14 @@ export default function App() {
   const patchMatch = obj => { if (readOnly) return; setMatch(m => ({ ...m, ...obj })); };
   const byId = id => players.find(p => p.id === id);
   const nameOf = id => { const p = byId(id); return p ? displayFirst(p) : '—'; };
+  // Notities zonder playerId zijn team-brede notities (geen specifieke speelster).
+  const noteSubjectName = n => n.playerId ? nameOf(n.playerId) : 'Team';
+  // Categorie is niet verplicht (een toelichting-alleen mag ook) - zonder categorie valt de
+  // ": "-scheiding tussen categorie en toelichting weg, anders zou dat een kaal ": tekst" geven.
+  const noteSummary = n => {
+    const val = n.valence === '+' ? '+ ' : '– ';
+    return n.categoryLabel ? val + n.categoryLabel + (n.text ? ': ' + n.text : '') : val + (n.text || '');
+  };
   const selectedPlayers = () => {
     const sel = match.selected || [];
     return players.filter(p => sel.indexOf(p.id) >= 0);
@@ -790,6 +896,59 @@ export default function App() {
     const newMatch = { ...match, injuries: inj };
     const sched = buildSchedule(newMatch, players, from || 0);
     setMatch({ ...newMatch, schedule: sched || match.schedule });
+  }
+
+  // Notitie-vorm: { id, playerId, group, categoryId, categoryLabel, valence, text, quarter, half, createdAt }.
+  // categoryLabel wordt bewust mee-opgeslagen (snapshot) zodat een latere hernoeming/verwijdering
+  // van de categorie oude aantekeningen niet corrumpeert.
+  function openNoteEditor(playerId, quarter, half) {
+    if (readOnly) return;
+    setNoteEditor({ id: null, playerId, quarter, half, group: NOTE_GROUPS[0].key, categoryId: '', valence: '-', text: '' });
+  }
+
+  // Team-brede notitie: playerId null, geen kwart uit een geklikte cel af te leiden - daarom
+  // krijgt de dialoog voor dit geval een eigen kwart-keuze (zie noteDialog.quarterTabs hieronder).
+  // startQuarter is het kwart waarmee de kwart-keuze opent - vanuit wedstrijdmodus is dat het
+  // kwart dat nu live loopt (liveQuarter), vanuit het gewone wedstrijdschema gewoon kwart 1.
+  function openTeamNoteEditor(startQuarter) {
+    if (readOnly) return;
+    setNoteEditor({ id: null, playerId: null, quarter: startQuarter || 0, half: 0, group: NOTE_GROUPS[0].key, categoryId: '', valence: '-', text: '' });
+  }
+
+  // Een bestaande notitie openen om te wijzigen - vult de dialoog met de opgeslagen waarden en
+  // onthoudt het id, zodat "Opslaan" hem bijwerkt in plaats van een nieuwe aan te maken.
+  function openNoteEditorForEdit(n) {
+    if (readOnly) return;
+    setNoteEditor({
+      id: n.id, playerId: n.playerId, quarter: n.quarter, half: n.half,
+      group: n.group || NOTE_GROUPS[0].key, categoryId: n.categoryId || '', valence: n.valence, text: n.text || ''
+    });
+  }
+
+  function saveNote() {
+    if (readOnly || !noteEditor) return;
+    const text = (noteEditor.text || '').trim();
+    // Een categorie kiezen is niet strikt verplicht - een toelichting alleen (bv. een algemene
+    // opmerking die niet in één categorie past) is ook een geldige notitie. Is er wél een
+    // categorie gekozen, dan wordt die (net als de rest) toegepast.
+    const cat = noteEditor.categoryId ? (noteCategories[noteEditor.group] || []).find(c => c.id === noteEditor.categoryId) : null;
+    if (!cat && !text) return;
+    const fields = {
+      playerId: noteEditor.playerId, group: cat ? noteEditor.group : '', categoryId: cat ? cat.id : '', categoryLabel: cat ? cat.label : '',
+      valence: noteEditor.valence, text, quarter: noteEditor.quarter, half: noteEditor.half
+    };
+    if (noteEditor.id) {
+      setMatch(mm => ({ ...mm, notes: (mm.notes || []).map(n => n.id === noteEditor.id ? { ...n, ...fields } : n) }));
+    } else {
+      const entry = { id: 'note' + Date.now() + Math.random().toString(36).slice(2, 6), createdAt: Date.now(), ...fields };
+      setMatch(mm => ({ ...mm, notes: (mm.notes || []).concat([entry]) }));
+    }
+    setNoteEditor(null);
+  }
+
+  function removeNote(id) {
+    if (readOnly) return;
+    setMatch(mm => ({ ...mm, notes: (mm.notes || []).filter(n => n.id !== id) }));
   }
 
   function applySwap(b, pos, newId) {
@@ -833,7 +992,8 @@ export default function App() {
       gf: fx ? fx.gf : '', ga: fx ? fx.ga : '',
       home: fx ? !!fx.home : true,
       friendly: fx ? !!fx.friendly : false,
-      halves: halvesPlayed(match.schedule)
+      halves: halvesPlayed(match.schedule),
+      notes: match.notes || []
     };
     setHistory(h => {
       const idx = h.findIndex(x => x.date === entry.date && x.opponent === entry.opponent);
@@ -856,7 +1016,7 @@ export default function App() {
       setMatch({
         fixtureId: f.id, opponent: f.opponent, date: f.date,
         selected: [], keeperId: '', keeper2Id: '', keeperSwitches: false, keepersPlayOut: false,
-        schedule: null, injuries: {}, locked: false
+        schedule: null, injuries: {}, locked: false, notes: []
       });
     }
   }
@@ -907,7 +1067,7 @@ export default function App() {
   // een anonieme bezoeker krijgt deze items daarom niet eens in het menu te zien. Ouders is
   // bewust wél voor iedereen zichtbaar (ook uitgelogd) - dat is juist waar ouders zonder
   // account kunnen zien wie de pauzehap heeft en wie er rijdt.
-  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'historie', 'afspraken', 'teams'];
+  const LOGGED_IN_ONLY_TABS = ['wedstrijd', 'sc', 'notities', 'historie', 'afspraken', 'teams'];
   // Iemand die voor het bekeken team geen coach (of admin) is - bv. manager van dit team,
   // coach/manager van een ánder team dat nu even niet bekeken wordt, of nergens aan gekoppeld -
   // krijgt dezelfde tabs te zien als een uitgelogde bezoeker (Programma, Standen, Team, Ouders).
@@ -918,7 +1078,7 @@ export default function App() {
   const limitedNav = !!user && !isMyTeam;
   const tabs = [
     ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
-    ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
+    ['notities', 'Notities'], ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     // Live: verschijnt voor IEDEREEN die dit team heeft geselecteerd (ook uitgelogd) zodra de
     // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
     // hier al kant-en-klaar door de filter hieronder.
@@ -933,6 +1093,53 @@ export default function App() {
           ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600'
           : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400'))
   }));
+
+  // Twee losse navigatie-indelingen - welke ervan zichtbaar is, bepaalt puur CSS (zie
+  // .nav-desktop/.nav-mobile in index.css), niet React-state, want de gebruiker wil bewust een
+  // écht andere indeling per schermbreedte i.p.v. één indeling die overal hetzelfde is.
+  //
+  // Desktop: ongewijzigd t.o.v. voor het "Meer"-menu - een coach krijgt de minst gebruikte
+  // tabbladen achter "Meer" (aan het eind), een niet-coach ziet gewoon de platte lijst.
+  const COACH_MORE_KEYS = ['verslagen', 'sc', 'notities', 'historie', 'afspraken', 'teams'];
+  const desktopPrimaryTabs = isMyTeam ? tabs.filter(t => !COACH_MORE_KEYS.includes(t.key)) : tabs;
+  const desktopMoreTabs = isMyTeam ? tabs.filter(t => COACH_MORE_KEYS.includes(t.key)) : [];
+  const desktopMoreMenuActive = desktopMoreTabs.some(t => t.key === tab);
+  //
+  // Mobiel: geldt voor iedereen (ook de kortere navigatie voor ouders/uitgelogde bezoekers) - ook
+  // die lijst bleek op een telefoon niet op één regel te passen. "Programma" staat apart vooraan
+  // en "Meer" komt daar direct achter (zie render), zodat je 'm meteen ziet zonder te swipen.
+  // "Teams" blijft voor wie geen coach van dít team is buiten Meer - die moet altijd makkelijk
+  // naar een team kunnen wisselen waar hij dat wél is.
+  const MOBILE_MORE_KEYS = isMyTeam ? COACH_MORE_KEYS : ['verslagen'];
+  const mobilePrimaryTabs = tabs.filter(t => !MOBILE_MORE_KEYS.includes(t.key));
+  const mobileMoreTabs = tabs.filter(t => MOBILE_MORE_KEYS.includes(t.key));
+  const mobileMoreMenuActive = mobileMoreTabs.some(t => t.key === tab);
+  const programmaTab = mobilePrimaryTabs.find(t => t.key === 'programma');
+  const restMobilePrimaryTabs = mobilePrimaryTabs.filter(t => t.key !== 'programma');
+
+  // Gedeeld door de desktop- en mobiele navigatie hieronder - scheelt dat de "Meer"-dialoog twee
+  // keer moet worden uitgeschreven. Beide varianten delen ook dezelfde moreMenuOpen-state (er is
+  // toch maar één van de twee tegelijk zichtbaar, dus dat kan geen kwaad).
+  const moreMenuButton = (items, active, refObj) => items.length > 0 && (
+    <div ref={refObj} style={css('position:relative;flex:0 0 auto')}>
+      <button type="button" onClick={() => setMoreMenuOpen(v => !v)}
+        style={css('background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
+          + (active ? 'color:var(--color-text);border-bottom:3px solid var(--color-accent);font-weight:600' : 'color:var(--color-neutral-700);border-bottom:3px solid transparent;font-weight:400'))}>
+        Meer {moreMenuOpen ? '▴' : '▾'}
+      </button>
+      {moreMenuOpen && (
+        <div style={css('position:absolute;top:100%;left:0;margin-top:4px;min-width:180px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);padding:6px;display:flex;flex-direction:column;z-index:40')}>
+          {items.map(t => (
+            <button key={t.key} type="button" onClick={() => { t.go(); setMoreMenuOpen(false); }}
+              style={css('text-align:left;background:none;border:none;padding:8px 10px;border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-body);font-size:15px;white-space:nowrap;'
+                + (tab === t.key ? 'color:var(--color-text);font-weight:600;background:var(--color-neutral-100)' : 'color:var(--color-neutral-700);font-weight:400'))}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   const sel = m.selected || [];
   const selectionChips = players.map(p => {
@@ -1020,6 +1227,12 @@ export default function App() {
         const subA = pa ? ((playedA && playedB) ? cumBy[2 * q + 1][pa] : cumBy[2 * q][pa]) || 0 : 0;
         const pbPlayedA = pb && ids(a).indexOf(pb) >= 0;
         const subB = pb ? ((pbPlayedA && ids(b).indexOf(pb) >= 0) ? cumBy[2 * q + 1][pb] : cumBy[2 * q + 1][pb]) || 0 : 0;
+        // Badge telt ALLE notities van deze speler in de hele wedstrijd, niet alleen dit kwart -
+        // zo blijft zichtbaar dat er iets over haar genoteerd staat in elk kwart waarin ze speelt.
+        const badgeFor = pid => {
+          const ns = pid ? (m.notes || []).filter(n => n.playerId === pid) : [];
+          return ns.length ? { count: ns.length, hasNeg: ns.some(n => n.valence === '-') } : null;
+        };
         return {
           key: k,
           pos: PMAP[k].label,
@@ -1027,6 +1240,10 @@ export default function App() {
           nameB: swap ? (pb ? nameOf(pb) + supNum(subB) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
           onEdit: readOnly ? undefined : () => { setEditing({ q, half: 0, pos: k }); setRelocating(null); },
           onEditB: readOnly ? undefined : () => { setEditing({ q, half: 1, pos: k }); setRelocating(null); },
+          onNote: (readOnly || !pa) ? undefined : () => openNoteEditor(pa, q, 0),
+          noteBadge: badgeFor(pa),
+          onNoteB: (readOnly || !swap || !pb) ? undefined : () => openNoteEditor(pb, q, 1),
+          noteBadgeB: swap ? badgeFor(pb) : null,
           style: CELL + 'cursor:pointer;border:1px solid transparent;'
             + (startedNew ? 'background:' + C_IN_BG : startedMoved ? 'background:' + C_MOVE_BG : 'background:var(--color-neutral-200)'),
           nameAStyle: 'font-size:16px;line-height:1.2;font-weight:500;'
@@ -1102,12 +1319,26 @@ export default function App() {
     };
   }).sort((a, b) => b._minutesNum - a._minutesNum);
 
+  const matchNoteRowsForPrint = (m.notes || []).slice()
+    .sort((a, b) => noteSubjectName(a).localeCompare(noteSubjectName(b)) || a.quarter - b.quarter)
+    .map(n => ({
+      key: n.id, player: noteSubjectName(n), quarter: n.quarter + 1,
+      valence: n.valence === '+' ? '+' : '–', category: n.categoryLabel || '—', text: n.text || ''
+    }));
+
   const injOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.injuries || {})[p.id] == null).map(p => ({ id: p.id, label: displayFirst(p) }));
   const injFromOptions = [1, 2, 3, 4].map(q => ({ value: String(q), label: 'vanaf ' + q + 'e kwart' }));
   const injuryList = Object.keys(m.injuries || {}).map(id => ({
     key: id,
     label: nameOf(id) + ' geblesseerd vanaf kwart ' + (Math.floor(m.injuries[id] / 2) + 1) + ' — klik om terug te zetten',
     clear: () => clearInjury(id)
+  }));
+
+  const matchNoteChips = (m.notes || []).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(n => ({
+    key: n.id,
+    valence: n.valence,
+    label: noteSubjectName(n) + ' · kwart ' + (n.quarter + 1) + ' · ' + noteSummary(n) + ' — klik om te wijzigen',
+    edit: () => openNoteEditorForEdit(n)
   }));
 
   const fitOf = (p, pos) => p && p.prefs[pos] ? 'voorkeur ' + p.prefs[pos] + ' op deze plek' : 'speelt hier normaal niet';
@@ -1186,6 +1417,52 @@ export default function App() {
     };
   }
 
+  let noteDialog = null;
+  if (noteEditor) {
+    const ne = noteEditor;
+    // "Eerder genoteerd" toont ALLE notities van deze speler (elk kwart), niet alleen dit kwart -
+    // consistent met de badge in het schema, die ook match-breed telt i.p.v. per kwart.
+    const existing = (m.notes || []).filter(n => n.playerId === ne.playerId);
+    noteDialog = {
+      title: (ne.id ? 'Notitie bewerken · ' : 'Notitie · ') + (ne.playerId ? nameOf(ne.playerId) : 'Team') + ' · kwart ' + (ne.quarter + 1),
+      quarterTabs: ne.playerId ? null : [0, 1, 2, 3].map(q => ({
+        key: q, label: 'Kwart ' + (q + 1),
+        go: () => setNoteEditor({ ...ne, quarter: q }),
+        style: 'cursor:pointer;font-family:var(--font-body);font-size:15px;padding:4px 10px;border-radius:var(--radius-md);'
+          + (ne.quarter === q ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)' : 'background:transparent;color:var(--color-neutral-700);border:1px solid var(--color-neutral-400)')
+      })),
+      groupTabs: NOTE_GROUPS.map(g => ({
+        key: g.key, label: g.label,
+        go: () => setNoteEditor({ ...ne, group: g.key, categoryId: '' }),
+        style: 'cursor:pointer;font-family:var(--font-body);font-size:15px;padding:4px 10px;border-radius:var(--radius-md);'
+          + (ne.group === g.key ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)' : 'background:transparent;color:var(--color-neutral-700);border:1px solid var(--color-neutral-400)')
+      })),
+      categories: (noteCategories[ne.group] || []).map(c => ({
+        key: c.id, label: c.label,
+        go: () => setNoteEditor({ ...ne, categoryId: c.id }),
+        style: 'cursor:pointer;font-family:var(--font-body);font-size:15px;padding:5px 12px;border-radius:999px;'
+          + (ne.categoryId === c.id ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)' : 'background:transparent;color:var(--color-text);border:1px solid var(--color-neutral-400)')
+      })),
+      valence: ne.valence,
+      setValence: v => setNoteEditor({ ...ne, valence: v }),
+      text: ne.text,
+      setText: v => setNoteEditor({ ...ne, text: v }),
+      canSave: !!ne.categoryId || !!(ne.text && ne.text.trim()),
+      isEditing: !!ne.id,
+      save: saveNote,
+      remove: ne.id ? () => removeNote(ne.id) : null,
+      close: () => setNoteEditor(null),
+      // Klikken op een eerder gemaakte notitie laadt 'm in de dialoog om te wijzigen (i.p.v.
+      // 'm direct te verwijderen) - de notitie die nu al in bewerking is, is uitgelicht.
+      existing: existing.map(n => ({
+        key: n.id,
+        label: 'kwart ' + (n.quarter + 1) + ' · ' + noteSummary(n),
+        active: n.id === ne.id,
+        edit: () => openNoteEditorForEdit(n)
+      }))
+    };
+  }
+
   const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
   const kpCount = players.filter(pl => pl.fixedKeeper).length;
   const teamRows = players.map(p => ({
@@ -1248,6 +1525,63 @@ export default function App() {
     if (readOnly) return;
     setSc(s => ({ ...s, [group]: (s[group] || []).concat([{ id: 'sc' + Date.now() + Math.random().toString(36).slice(2, 6), role: '', picks: [null, null, null] }]) }));
   };
+
+  // Notities-categorieën per groep — de 4 groepen zelf liggen vast (NOTE_GROUPS), maar de
+  // items eronder zijn hier in de app zelf te beheren (net als de strafcorner-rollen hierboven).
+  const noteCategoryRows = group => (noteCategories[group] || []).map((c, i, arr) => ({
+    key: c.id,
+    label: c.label,
+    onLabelChange: e => {
+      if (readOnly) return;
+      const v = e.target.value;
+      setNoteCategories(nc => ({ ...nc, [group]: (nc[group] || []).map(x => x.id === c.id ? { ...x, label: v } : x) }));
+    },
+    moveUp: i > 0 ? () => {
+      if (readOnly) return;
+      setNoteCategories(nc => {
+        const list = (nc[group] || []).slice();
+        [list[i - 1], list[i]] = [list[i], list[i - 1]];
+        return { ...nc, [group]: list };
+      });
+    } : null,
+    moveDown: i < arr.length - 1 ? () => {
+      if (readOnly) return;
+      setNoteCategories(nc => {
+        const list = (nc[group] || []).slice();
+        [list[i + 1], list[i]] = [list[i], list[i + 1]];
+        return { ...nc, [group]: list };
+      });
+    } : null,
+    remove: () => {
+      if (readOnly) return;
+      setNoteCategories(nc => ({ ...nc, [group]: (nc[group] || []).filter(x => x.id !== c.id) }));
+    }
+  }));
+  const addNoteCategory = group => {
+    if (readOnly) return;
+    setNoteCategories(nc => ({
+      ...nc,
+      [group]: (nc[group] || []).concat([{ id: 'nc' + Date.now() + Math.random().toString(36).slice(2, 6), label: '' }])
+    }));
+  };
+
+  // Overzicht voor trainingsvoorbereiding: alle notities uit de historie plus de lopende
+  // wedstrijd, optioneel gefilterd op één speler, nieuwste eerst.
+  const noteSources = history.map(h => ({ date: h.date, opponent: h.opponent, notes: h.notes || [] }))
+    .concat((m.notes && m.notes.length) ? [{ date: m.date, opponent: m.opponent, notes: m.notes }] : []);
+  const noteRows = noteSources.flatMap(src => (src.notes || [])
+    .filter(n => {
+      if (!notesFilterPlayer) return true;
+      if (notesFilterPlayer === '__team__') return !n.playerId;
+      return n.playerId === notesFilterPlayer;
+    })
+    .map(n => ({
+      key: src.date + '|' + src.opponent + '|' + n.id,
+      date: src.date, opponent: src.opponent, player: noteSubjectName(n),
+      valence: n.valence === '+' ? '+' : '–', category: n.categoryLabel || '—', text: n.text || '',
+      _createdAt: n.createdAt || 0
+    })))
+    .sort((a, b) => b._createdAt - a._createdAt);
   // Strafcorner-picks voor déze wedstrijd: standaard de seizoensvolgorde (uit de Strafcorner-tab),
   // maar alleen de spelers die voor deze wedstrijd geselecteerd én (nog) niet uitgevallen zijn.
   // Wie wegvalt (niet geselecteerd, of tijdens de wedstrijd geblesseerd) wordt uit de rij
@@ -1649,9 +1983,9 @@ export default function App() {
   // als in de compacte wedstrijdmodus-weergave hergebruikt kunnen worden.
   const positionEditorDialog = editor && (
     <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
-      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
+      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow:hidden;padding:var(--space-4)')}>
         <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{editor.title}</div>
-        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3);overflow-y:auto;min-height:0;flex:1')}>
           <div style={css('display:flex;gap:var(--space-2)')}>
             {editor.halfTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
           </div>
@@ -1672,9 +2006,9 @@ export default function App() {
   );
   const positionRelocatorDialog = relocator && (
     <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
-      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')}>
+      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow:hidden;padding:var(--space-4)')}>
         <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{relocator.title}</div>
-        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
+        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3);overflow-y:auto;min-height:0;flex:1')}>
           <div style={css('font-size:16px;color:var(--color-neutral-700);text-wrap:pretty')}>{relocator.intro}</div>
           <div style={css('display:flex;flex-direction:column;gap:5px')}>
             {relocator.options.map(o => (
@@ -1687,6 +2021,54 @@ export default function App() {
           </div>
         </div>
         <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={relocator.close}>Op de bank laten</button></div>
+      </div>
+    </div>
+  );
+  const noteEditorDialog = noteDialog && (
+    <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')}>
+      <div className="dialog elev-lg" style={css('max-width:460px;width:100%;max-height:80vh;overflow:hidden;padding:var(--space-4)')}>
+        <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:22px')}>{noteDialog.title}</div>
+        <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-3);overflow-y:auto;min-height:0;flex:1')}>
+          {noteDialog.quarterTabs && (
+            <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+              {noteDialog.quarterTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+            </div>
+          )}
+          <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+            {noteDialog.groupTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+          </div>
+          <div style={css('display:flex;gap:6px;flex-wrap:wrap')}>
+            {noteDialog.categories.map(c => <button key={c.key} type="button" onClick={c.go} style={css(c.style)}>{c.label}</button>)}
+          </div>
+          <div style={css('display:flex;gap:var(--space-2)')}>
+            <button type="button" onClick={() => noteDialog.setValence('-')} style={css('flex:1;cursor:pointer;font-family:var(--font-body);font-size:15px;padding:6px 10px;border-radius:var(--radius-md);'
+              + (noteDialog.valence === '-' ? 'background:' + C_OUT + ';color:#fff;border:1px solid ' + C_OUT : 'background:transparent;color:var(--color-text);border:1px solid var(--color-neutral-400)'))}>Werkpunt (–)</button>
+            <button type="button" onClick={() => noteDialog.setValence('+')} style={css('flex:1;cursor:pointer;font-family:var(--font-body);font-size:15px;padding:6px 10px;border-radius:var(--radius-md);'
+              + (noteDialog.valence === '+' ? 'background:' + C_IN + ';color:#fff;border:1px solid ' + C_IN : 'background:transparent;color:var(--color-text);border:1px solid var(--color-neutral-400)'))}>Ging goed (+)</button>
+          </div>
+          <div className="field">
+            <label htmlFor="note-text">Toelichting (optioneel)</label>
+            <input className="input" id="note-text" type="text" maxLength={140} value={noteDialog.text} onChange={e => noteDialog.setText(e.target.value)} />
+          </div>
+          {noteDialog.existing.length > 0 && (
+            <div style={css('display:flex;flex-direction:column;gap:5px')}>
+              <div style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Eerder genoteerd deze wedstrijd — klik om te wijzigen</div>
+              <div style={css('display:flex;gap:6px;flex-wrap:wrap')}>
+                {noteDialog.existing.map(e => (
+                  <button key={e.key} type="button" className={e.active ? 'tag' : 'tag tag-accent-2'}
+                    onClick={e.edit} style={css('cursor:pointer;border:none;' + (e.active ? 'background:var(--color-accent-700);color:#fff' : ''))}>{e.label}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="dialog-actions" style={css(noteDialog.remove ? 'justify-content:space-between' : undefined)}>
+          {noteDialog.remove && <button type="button" className="btn btn-ghost" style={css('color:' + C_OUT)} onClick={noteDialog.remove}>Verwijderen</button>}
+          <span style={css('display:flex;gap:var(--space-2)')}>
+            <button type="button" className="btn btn-ghost" onClick={noteDialog.close}>Annuleren</button>
+            <button type="button" className="btn btn-primary" disabled={!noteDialog.canSave} onClick={noteDialog.save}>Opslaan</button>
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -1703,10 +2085,22 @@ export default function App() {
         {h.rows.map(row => (
           <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
             {row.cells.map(cell => (
-              <div key={cell.key} data-poscell="1" style={css(cell.style)}>
-                <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>{cell.pos}</div>
+              <div key={cell.key} data-poscell="1" style={css(cell.style + 'position:relative')}>
+                <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);display:flex;align-items:center;justify-content:center;gap:4px')}>
+                  <span>{cell.pos}</span>
+                  {cell.onNote && (
+                    <button type="button" data-noprint="1" aria-label={`Notitie — ${cell.nameA}`}
+                      onClick={e => { e.stopPropagation(); cell.onNote(); }}
+                      style={css(noteDotStyle(cell.noteBadge))}>{cell.noteBadge ? cell.noteBadge.count : '+'}</button>
+                  )}
+                </div>
                 <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
                 <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
+                {cell.onNoteB && (
+                  <button type="button" data-noprint="1" aria-label={`Notitie — ${cell.nameB}`}
+                    onClick={e => { e.stopPropagation(); cell.onNoteB(); }}
+                    style={css(noteDotStyle(cell.noteBadgeB) + 'position:absolute;bottom:2px;right:2px')}>{cell.noteBadgeB ? cell.noteBadgeB.count : '+'}</button>
+                )}
               </div>
             ))}
           </div>
@@ -1769,6 +2163,7 @@ export default function App() {
     patchMatch({ liveUs: newUs, goalLog: [...(m.goalLog || []), entry] });
     setPlayers(ps => ps.map(x => x.id === player.id ? { ...x, dp: (x.dp || 0) + 1 } : x));
     setScorerPicker(false);
+    setScorerSelected(null);
     setGoalRemark('');
   }
   function logNote(text, minute) {
@@ -1849,15 +2244,20 @@ export default function App() {
       { key: 'away', name: liveAwayName, isUs: !homeIsUs },
     ];
     const scorerOptions = players.filter(p => (m.selected || []).includes(p.id));
-    const manualMatch = /^(\d{1,2}):(\d{2})$/.exec(manualClockInput.trim());
+    // Zolang de coach het veld niet zelf heeft aangeraakt, loopt het gewoon live mee met de
+    // aftelklok - dat scheelt uitzoeken wat de huidige stand ook alweer was voordat je 'm even
+    // bijstelt. Zodra je begint te typen, staat manualClockInput niet meer leeg en wint dat.
+    const manualClockValue = manualClockInput || fmtTimerPadded(timerRemainingMs);
+    const manualMatch = /^(\d{1,2}):(\d{2})$/.exec(manualClockValue.trim());
 
     matchModeContent = (
       <main style={css('padding-top:var(--space-6);display:flex;justify-content:center')}>
         <div style={css('display:flex;flex-direction:column;gap:var(--space-3);width:100%;max-width:640px')}>
 
-          <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:15px;cursor:pointer')}>
+          <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:15px;cursor:pointer;white-space:nowrap')}>
             <input type="checkbox" checked={!!m.liveOpened} onChange={e => patchMatch({ liveOpened: e.target.checked })} />
-            <span>Start wedstrijd — maakt de Live-pagina zichtbaar voor iedereen die dit team heeft geselecteerd</span>
+            <span>Start wedstrijd — zichtbaar voor iedereen</span>
+            <InfoDot text="Maakt de Live-pagina zichtbaar voor iedereen die dit team heeft geselecteerd." />
           </label>
 
           {/* Klok, live stand, kwart-keuze en commentaar/beëindigen zijn pas te bedienen zodra
@@ -1869,20 +2269,17 @@ export default function App() {
           <div style={css(m.liveOpened ? '' : 'opacity:0.45;pointer-events:none')}>
           <div style={css('display:flex;flex-direction:column;gap:var(--space-3)')}>
 
-          <div className="card elev-md" style={css('padding:var(--space-2) var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
-            <div style={css('display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)')}>
-              <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Aftelklok kwart · 17:30</span>
-              <span style={css('font-family:var(--font-heading);font-size:40px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1')}>{fmtTimer(timerRemainingMs)}</span>
-            </div>
-            <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+          <div className="card elev-md" style={css('padding:6px var(--space-3);display:flex;flex-direction:column;gap:6px')}>
+            <div style={css('display:flex;align-items:center;gap:var(--space-3)')}>
               {activeClock.running
-                ? <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:120px')} onClick={timerPause}>Pauze</button>
-                : <button type="button" className="btn btn-primary" style={css('flex:1;min-width:120px')} onClick={timerStart}>Start</button>}
-              <button type="button" className="btn btn-ghost" onClick={timerReset}>Reset</button>
+                ? <button type="button" className="btn btn-secondary" onClick={timerPause}>Pauze</button>
+                : <button type="button" className="btn btn-primary" onClick={timerStart}>Start</button>}
+              <span style={css('font-family:var(--font-heading);font-size:32px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1')}>{fmtTimer(timerRemainingMs)}</span>
+              <button type="button" className="btn btn-ghost" style={css('margin-left:auto')} onClick={timerReset}>Reset</button>
             </div>
             <div style={css('display:flex;align-items:center;gap:6px')}>
-              <span style={css('font-size:13px;color:var(--color-neutral-700)')}>Klok handmatig zetten (bv. na een ongewenste reset — linker veld = minuten, rechter veld = seconden):</span>
-              <input className="input" type="time" min="00:00" max="17:30" aria-label="Klok handmatig zetten — linker veld minuten, rechter veld seconden" style={css('padding:4px 6px')} value={manualClockInput} onChange={e => setManualClockInput(e.target.value)} />
+              <span style={css('font-size:13px;color:var(--color-neutral-700)')}>Klok handmatig zetten</span>
+              <input className="input" type="time" min="00:00" max="17:30" aria-label="Klok handmatig zetten — linker veld minuten, rechter veld seconden" style={css('padding:2px 4px;width:90px;font-size:13px')} value={manualClockValue} onChange={e => setManualClockInput(e.target.value)} />
               <button type="button" className="btn btn-ghost" disabled={!manualMatch} onClick={() => { timerSetManual(manualMatch[1], manualMatch[2]); setManualClockInput(''); }}>Zet</button>
             </div>
             {timerAlertActive && (
@@ -1911,7 +2308,7 @@ export default function App() {
                     <span style={css('font-family:var(--font-heading);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;min-width:32px;text-align:center')}>{(c.isUs ? m.liveUs : m.liveThem) || 0}</span>
                     {!m.liveEnded && (
                       <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')}
-                        onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); if (c.isUs) { setGoalRemark(''); setScorerPicker(true); } else { setThemGoalDialog(true); } }}>+</button>
+                        onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); if (c.isUs) { setGoalRemark(''); setScorerSelected(null); setScorerPicker(true); } else { setThemGoalDialog(true); } }}>+</button>
                     )}
                   </div>
                 </div>
@@ -1920,21 +2317,24 @@ export default function App() {
           </div>
 
           {scorerPicker && (
-            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setScorerPicker(false); setGoalRemark(''); }}>
-              <div className="dialog elev-lg" style={css('max-width:360px;width:100%;max-height:80vh;overflow-y:auto;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setScorerPicker(false); setScorerSelected(null); setGoalRemark(''); }}>
+              <div className="dialog elev-lg" style={css('max-width:360px;width:100%;max-height:80vh;overflow:hidden;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
                 <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Wie scoorde?</div>
-                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:5px')}>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:5px;overflow-y:auto;min-height:0;flex:1')}>
                   <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
                     Minuut
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
                   {scorerOptions.map(p => (
-                    <button key={p.id} type="button" className="btn btn-secondary" style={css('justify-content:flex-start')} onClick={() => logGoalUs(p, goalRemark, minuteInput)}>{displayFirst(p)}</button>
+                    <button key={p.id} type="button" className={scorerSelected === p.id ? 'btn btn-primary' : 'btn btn-secondary'} style={css('justify-content:flex-start')} onClick={() => setScorerSelected(p.id)}>{displayFirst(p)}</button>
                   ))}
                   {!scorerOptions.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Geen speelsters geselecteerd voor deze wedstrijd.</p>}
                   <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('margin-top:8px;min-height:60px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
                 </div>
-                <div className="dialog-actions"><button type="button" className="btn btn-ghost" onClick={() => { setScorerPicker(false); setGoalRemark(''); }}>Annuleren</button></div>
+                <div className="dialog-actions">
+                  <button type="button" className="btn btn-ghost" onClick={() => { setScorerPicker(false); setScorerSelected(null); setGoalRemark(''); }}>Annuleren</button>
+                  <button type="button" className="btn btn-primary" disabled={!scorerSelected} onClick={() => logGoalUs(byId(scorerSelected), goalRemark, minuteInput)}>OK</button>
+                </div>
               </div>
             </div>
           )}
@@ -1995,14 +2395,20 @@ export default function App() {
             <option value="3">Kwart 4</option>
           </select>
 
-          {m.liveMatchStarted && !m.liveEnded && (
-            <button type="button" className="btn btn-secondary" onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); setCommentDialog(true); }}>Extra commentaar</button>
-          )}
+          <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+            <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} disabled={readOnly} onClick={() => openTeamNoteEditor(liveQuarter)}>+ Teamnotitie</button>
+            {m.liveMatchStarted && !m.liveEnded && (
+              <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); setCommentDialog(true); }}>Extra live commentaar</button>
+            )}
+            {m.liveMatchStarted && !m.liveEnded && (
+              <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => setEndMatchConfirm(true)}>Wedstrijd beëindigen</button>
+            )}
+          </div>
 
           {commentDialog && (
             <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setCommentDialog(false); setCommentText(''); }}>
               <div className="dialog elev-lg" style={css('max-width:400px;width:100%;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
-                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Extra commentaar</div>
+                <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Extra live commentaar</div>
                 <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
                   <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
                     Minuut
@@ -2016,10 +2422,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-          )}
-
-          {m.liveMatchStarted && !m.liveEnded && (
-            <button type="button" className="btn btn-secondary" onClick={() => setEndMatchConfirm(true)}>Wedstrijd beëindigen</button>
           )}
 
           {endMatchConfirm && (
@@ -2077,6 +2479,7 @@ export default function App() {
 
           {positionEditorDialog}
           {positionRelocatorDialog}
+          {noteEditorDialog}
         </div>
       </main>
     );
@@ -2092,18 +2495,16 @@ export default function App() {
           ondanks dat hij als eerste in de DOM staat. */}
       <img src="/hcrb.png" alt="" aria-hidden="true" data-noprint="1" style={css('position:fixed;top:220px;right:max(var(--space-8),calc((100vw - 1180px) / 2 + var(--space-8)));width:min(12.5vw,120px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
 
-      <header data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
-        <div style={css('height:5px;background:var(--color-text)')}></div>
-        <div style={css('display:flex;align-items:flex-start;gap:var(--space-3);padding-top:var(--space-1)')}>
-          <img src="/hcrb.png" alt="HCRB" style={css('height:76px;width:auto')} />
-          <div style={css('display:flex;flex-direction:column;gap:var(--space-2);flex:1;min-width:0')}>
-            <div style={css('display:flex;align-items:baseline;gap:var(--space-4);flex-wrap:wrap')}>
-              <h1 style={css('font-family:var(--font-heading);font-weight:600;font-size:44px;line-height:1;margin:0;letter-spacing:-0.01em')}>{m.opponent ? scheduleTitle : ownTeamName}</h1>
-            </div>
+      <header data-noprint="1" style={css('display:flex;flex-direction:column;gap:6px')}>
+        <div style={css('height:4px;background:var(--color-text)')}></div>
+        <div style={css('display:flex;align-items:center;gap:var(--space-3);padding-top:2px')}>
+          <img src="/hcrb.png" alt="HCRB" style={css('height:48px;width:auto')} />
+          <div style={css('display:flex;flex-direction:column;gap:4px;flex:1;min-width:0')}>
+            <h1 style={css('font-family:var(--font-heading);font-weight:600;font-size:28px;line-height:1.15;margin:0;letter-spacing:-0.01em')}>{m.opponent ? scheduleTitle : ownTeamName}</h1>
             <div data-noprint="1" style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap')}>
               <div style={css('display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap')}>
-                <div className="field" style={css('margin:0;min-width:200px')}>
-                  <select className="input" aria-label="Team" style={css('padding:5px 8px;font-size:14px')} value={currentTeamId || ''}
+                <div className="field" style={css('margin:0;min-width:170px')}>
+                  <select className="input" aria-label="Team" style={css('padding:4px 6px;font-size:13px')} value={currentTeamId || ''}
                     onChange={e => setCurrentTeamId(e.target.value)}>
                     {!teams.length && <option value="">Nog geen teams</option>}
                     {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -2114,34 +2515,57 @@ export default function App() {
                     {liveStatus() && liveStatus().label && (
                       <span style={css('font-size:11px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;color:#c23b3b')}>{liveStatus().label}</span>
                     )}
-                    <span style={css('font-size:14px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>
+                    <span style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>
                       {liveStatus() ? liveStatus().line : (standingsLine || dateline)}
                     </span>
                   </div>
                 )}
               </div>
-              <div style={css('display:flex;flex-direction:column;align-items:flex-end;gap:6px')}>
+              <div style={css('display:flex;align-items:center;gap:8px;margin-left:auto')}>
                 {isMyTeam && (
                   <button type="button" className={matchMode ? 'btn btn-secondary' : 'btn btn-primary'} style={css('font-size:13px;padding:5px 10px')}
                     onClick={() => setMatchMode(v => !v)}>{matchMode ? 'Wedstrijdmodus uit' : 'Wedstrijdmodus'}</button>
                 )}
-                {user ? (
-                  <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:14px')}>
-                    <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : (myRoleForCurrentTeam ? ` · ${myRoleForCurrentTeam}` : '')}</span>
-                    <button type="button" className="btn btn-secondary" onClick={logout}>Uitloggen</button>
-                  </div>
-                ) : (
-                  <button type="button" className="btn btn-primary" onClick={() => setLoginOpen(true)}>Inloggen</button>
+                {matchMode && isMyTeam && (
+                  <button type="button" className="btn btn-ghost" aria-label={isFullscreen ? 'Volledig scherm uit' : 'Volledig scherm'}
+                    title={isFullscreen ? 'Volledig scherm uit' : 'Volledig scherm'} style={css('padding:6px;line-height:0')} onClick={toggleFullscreen}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d={isFullscreen ? ICON_FULLSCREEN_EXIT : ICON_FULLSCREEN} />
+                    </svg>
+                  </button>
                 )}
               </div>
             </div>
           </div>
         </div>
+        <div data-noprint="1" style={css('display:flex;justify-content:flex-end')}>
+          {user ? (
+            <div style={css('display:flex;align-items:center;gap:var(--space-2);font-size:13px')}>
+              <span style={css('color:var(--color-neutral-700)')}>{user.email}{isAdmin ? ' · admin' : (myRoleForCurrentTeam ? ` · ${myRoleForCurrentTeam}` : '')}</span>
+              <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:4px 8px')} onClick={logout}>Uitloggen</button>
+            </div>
+          ) : (
+            <button type="button" className="btn btn-primary" style={css('font-size:13px;padding:4px 8px')} onClick={() => setLoginOpen(true)}>Inloggen</button>
+          )}
+        </div>
         {!(matchMode && isMyTeam) && (
           <>
             <div style={css('height:1px;background:var(--color-text);margin-top:var(--space-1)')}></div>
-            <nav data-noprint="1" style={css('display:flex;gap:var(--space-4);padding-top:var(--space-1);flex-wrap:wrap')}>
-              {tabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+            {/* Desktop: ongewijzigd t.o.v. voor het "Meer"-menu (platte lijst voor een niet-coach,
+                Meer aan het eind voor een coach) - welke van de twee <nav>'s zichtbaar is, bepaalt
+                puur de .nav-desktop/.nav-mobile-CSS in index.css, geen React-state. */}
+            <nav data-noprint="1" className="nav-desktop" style={css('display:flex;gap:var(--space-4);padding-top:var(--space-1);flex-wrap:wrap;align-items:center')}>
+              {desktopPrimaryTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style)}>{t.label}</button>)}
+              {moreMenuButton(desktopMoreTabs, desktopMoreMenuActive, desktopMoreMenuRef)}
+            </nav>
+            {/* Mobiel: Programma + Meer meteen zichtbaar (geen swipen nodig om Meer te bereiken),
+                de rest van de tabbladen swipebaar in een eigen scrollstrook. */}
+            <nav data-noprint="1" className="nav-mobile" style={css('display:flex;align-items:center;gap:var(--space-3);padding-top:var(--space-1);min-width:0')}>
+              {programmaTab && <button type="button" onClick={programmaTab.go} style={css(programmaTab.style + ';white-space:nowrap;flex:0 0 auto')}>{programmaTab.label}</button>}
+              {moreMenuButton(mobileMoreTabs, mobileMoreMenuActive, mobileMoreMenuRef)}
+              <div className="hscroll-tabs" style={css('display:flex;gap:var(--space-4);overflow-x:auto;min-width:0')}>
+                {restMobilePrimaryTabs.map(t => <button key={t.key} type="button" onClick={t.go} style={css(t.style + ';white-space:nowrap;flex:0 0 auto')}>{t.label}</button>)}
+              </div>
             </nav>
           </>
         )}
@@ -2162,7 +2586,7 @@ export default function App() {
                 const f = fixtures.find(x => x.id === e.target.value);
                 if (!f) {
                   patchMatch({
-                    fixtureId: '', opponent: '', date: '', selected: [], keeperId: '', keeper2Id: '', keeperSwitches: false, keepersPlayOut: false, schedule: null, injuries: {}, locked: false,
+                    fixtureId: '', opponent: '', date: '', selected: [], keeperId: '', keeper2Id: '', keeperSwitches: false, keepersPlayOut: false, schedule: null, injuries: {}, locked: false, notes: [],
                     // Live-velden mee leegmaken - anders zou een uitgelogde bezoeker een verweesd
                     // Live-tabblad kunnen blijven zien voor een wedstrijd die niet meer gekozen is.
                     liveOpened: false, liveMatchStarted: false, liveEnded: false, liveQuarter: 0, clocks: {}, goalLog: [], liveUs: 0, liveThem: 0,
@@ -2340,6 +2764,10 @@ export default function App() {
                       <input type="checkbox" checked={printOptions.speeltijd} onChange={e => setPrintOptions(o => ({ ...o, speeltijd: e.target.checked }))} />
                       <span>Speeltijd deze wedstrijd</span>
                     </label>
+                    <label style={css('display:flex;align-items:center;gap:var(--space-2);font-size:16px;cursor:pointer')}>
+                      <input type="checkbox" checked={printOptions.notities} onChange={e => setPrintOptions(o => ({ ...o, notities: e.target.checked }))} />
+                      <span>Notities</span>
+                    </label>
                     <div className="dialog-actions">
                       <button type="button" className="btn btn-ghost" onClick={() => setPrintDialogOpen(false)}>Annuleren</button>
                       <button type="button" className="btn btn-primary" onClick={() => { setPrintDialogOpen(false); doPrint(); }}>Printen</button>
@@ -2365,9 +2793,28 @@ export default function App() {
                 </div>
               </div>
 
+              <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
+                <div style={css('display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap')}>
+                  <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Notities deze wedstrijd — tik op de + bij een speler in het schema</div>
+                  <button type="button" className="btn btn-ghost" disabled={readOnly} style={css('padding:2px 8px;font-size:14px')} onClick={() => openTeamNoteEditor(0)}>+ Teamnotitie</button>
+                </div>
+                {matchNoteChips.length ? (
+                  <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+                    {matchNoteChips.map(n => (
+                      <button key={n.key} type="button" className="tag" onClick={n.edit}
+                        style={css('cursor:pointer;border:none;' + (n.valence === '-' ? 'background:#f5dede;color:' + C_OUT : 'background:' + C_IN_BG + ';color:' + C_IN))}>{n.label}</button>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={css('font-size:14px;color:var(--color-neutral-700)')}>Nog geen notities voor deze wedstrijd.</span>
+                )}
+              </div>
+
               {positionEditorDialog}
 
               {positionRelocatorDialog}
+
+              {noteEditorDialog}
 
               <div data-noprint="1" style={css('display:flex;flex-wrap:wrap;gap:var(--space-1) var(--space-4);font-size:15px;color:var(--color-neutral-700);max-width:80ch')}>
                 <span>Bovenste naam = 1e helft, onderste naam = na de wissel op 8:00.</span>
@@ -2417,6 +2864,36 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div data-noprint={printOptions.notities ? undefined : '1'} style={css('display:flex;flex-direction:column;gap:var(--space-2)')}>
+                <h3 style={css('font-family:var(--font-heading);font-size:24px;margin:0;font-weight:600')}>Notities</h3>
+                {matchNoteRowsForPrint.length ? (
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left' }}>Speelster</th>
+                        <th>Kwart</th>
+                        <th>+/–</th>
+                        <th style={{ textAlign: 'left' }}>Categorie</th>
+                        <th style={{ textAlign: 'left' }}>Toelichting</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matchNoteRowsForPrint.map(r => (
+                        <tr key={r.key}>
+                          <td style={{ textAlign: 'left' }}>{r.player}</td>
+                          <td style={{ textAlign: 'center' }}>{r.quarter}</td>
+                          <td style={{ textAlign: 'center' }}>{r.valence}</td>
+                          <td style={{ textAlign: 'left' }}>{r.category}</td>
+                          <td style={{ textAlign: 'left' }}>{r.text}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700)')}>Geen notities voor deze wedstrijd.</p>
+                )}
               </div>
 
               <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-6)')}>
@@ -2576,13 +3053,13 @@ export default function App() {
             </label>
           )}
           <div style={{ overflowX: 'auto' }}>
-            <table className="table" style={css('min-width:0;table-layout:fixed;width:100%')}>
+            <table className="table" style={css('min-width:900px')}>
               <thead><tr>
                 <th style={{ textAlign: 'left', width: '122px', padding: '4px 5px' }}>Datum</th>
+                <th style={{ textAlign: 'left', width: '200px', padding: '4px 5px' }}>Wedstrijd</th>
                 <th style={{ textAlign: 'left', width: '38px', padding: '4px 5px' }}>Dag</th>
                 <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Verzamel</th>
                 <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Start</th>
-                <th style={{ textAlign: 'left', padding: '4px 5px' }}>Wedstrijd</th>
                 <th style={{ textAlign: 'left', width: '120px', padding: '4px 5px' }}>Type</th>
                 <th style={{ width: '85px', padding: '4px 5px' }}>Eindstand</th>
                 <th style={{ width: '54px', padding: '4px 5px' }}>Punten</th>
@@ -2592,14 +3069,14 @@ export default function App() {
                 {visibleFixtureRows.map(f => (
                   <tr key={f.key}>
                     <td style={{ padding: '4px 5px' }}>{readOnly ? nlDate(f.date) : <input className="input" type="date" aria-label={`Datum — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.date} onChange={f.onDate} />}</td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', padding: '4px 5px' }}>{f.day}</td>
-                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
-                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.time} onChange={f.onTime} />}</td>
                     <td style={{ textAlign: 'left', overflowWrap: 'break-word', padding: '4px 5px' }}>
                       <span style={css(f.homeStyle)}>{f.homeName}{f.home ? ' ♥' : ''}</span>
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
                       <span style={css(f.awayStyle)}>{f.awayName}{!f.home ? ' ♥' : ''}</span>
                     </td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', padding: '4px 5px' }}>{f.day}</td>
+                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
+                    <td style={{ padding: '4px 5px' }}>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.time} onChange={f.onTime} />}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', overflowWrap: 'break-word', padding: '4px 5px' }}>{f.type}</td>
                     <td style={{ textAlign: 'center', padding: '4px 5px' }}>
                       {f.live ? (
@@ -3000,6 +3477,76 @@ export default function App() {
           </div>
         </main>
       ) : accessGate('Strafcorner'))}
+
+      {tab === 'notities' && (isMyTeam ? (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-8)')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 var(--space-1);font-weight:600')}>Notities — categorieën</h2>
+            <p style={css('margin:0 0 var(--space-3);font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Deze categorieën verschijnen als tegels in het notitie-dialoogje bij het wedstrijdschema. De 4 groepen liggen vast, de items eronder pas je hier aan.</p>
+            <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-5)')}>
+              {NOTE_GROUPS.map(g => (
+                <div key={g.key}>
+                  <h3 style={css('font-family:var(--font-heading);font-size:18px;margin:0 0 6px;font-weight:600')}>{g.label}</h3>
+                  <div style={css('display:flex;flex-direction:column;gap:6px')}>
+                    {noteCategoryRows(g.key).map(c => (
+                      <div key={c.key} style={css('display:flex;gap:4px;align-items:center')}>
+                        <input className="input" type="text" disabled={readOnly} style={css('padding:4px 6px;flex:1')} value={c.label} onChange={c.onLabelChange} placeholder="Categorienaam" />
+                        <button type="button" className="btn btn-ghost" disabled={readOnly || !c.moveUp} style={{ padding: '2px 6px' }} onClick={c.moveUp || undefined}>↑</button>
+                        <button type="button" className="btn btn-ghost" disabled={readOnly || !c.moveDown} style={{ padding: '2px 6px' }} onClick={c.moveDown || undefined}>↓</button>
+                        <button type="button" className="btn btn-ghost" disabled={readOnly} style={{ padding: '2px 8px' }} onClick={c.remove}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="btn btn-ghost" disabled={readOnly} style={css('margin-top:var(--space-2)')} onClick={() => addNoteCategory(g.key)}>+ Categorie toevoegen</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0 0 var(--space-1);font-weight:600')}>Notities — overzicht</h2>
+            <p style={css('margin:0 0 var(--space-3);font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Alle notities uit gespeelde wedstrijden en de lopende wedstrijd, als input voor de eerstvolgende training.</p>
+            <div className="field" style={css('max-width:280px;margin-bottom:var(--space-3)')}>
+              <label htmlFor="notes-filter">Speelster</label>
+              <select className="input" id="notes-filter" value={notesFilterPlayer} onChange={e => setNotesFilterPlayer(e.target.value)}>
+                <option value="">— alle speelsters —</option>
+                <option value="__team__">Team</option>
+                {players.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+              </select>
+            </div>
+            {noteRows.length ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left' }}>Datum</th>
+                      <th style={{ textAlign: 'left' }}>Wedstrijd</th>
+                      <th style={{ textAlign: 'left' }}>Speelster</th>
+                      <th>+/–</th>
+                      <th style={{ textAlign: 'left' }}>Categorie</th>
+                      <th style={{ textAlign: 'left' }}>Toelichting</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {noteRows.map(r => (
+                      <tr key={r.key}>
+                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{nlDate(r.date)}</td>
+                        <td style={{ textAlign: 'left' }}>{r.opponent}</td>
+                        <td style={{ textAlign: 'left' }}>{r.player}</td>
+                        <td style={{ textAlign: 'center' }}>{r.valence}</td>
+                        <td style={{ textAlign: 'left' }}>{r.category}</td>
+                        <td style={{ textAlign: 'left' }}>{r.text}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700)')}>Nog geen notities.</p>
+            )}
+          </div>
+        </main>
+      ) : accessGate('Notities'))}
 
       {tab === 'historie' && (isMyTeam ? (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)')}>
