@@ -223,8 +223,11 @@ function assign(onPlayers, prevOn, mode, opts) {
 // blokken niet met terugwerkende kracht wijzigen, en respecteert de "bank 1e helft -> gegarandeerd
 // veld 2e helft"-garantie door nooit iemand uit de tweede helft van een kwart te halen die daar
 // verplicht staat, en nooit iemand een heel kwart op de bank te zetten.
-function enforceFairness(blocks, field, keeperIds, injuries, ptMode, fromBlock, assignOpts) {
-  const fullMatch = field.filter(p => injuries[p.id] == null && keeperIds.indexOf(p.id) < 0);
+function enforceFairness(blocks, field, keeperIds, injuries, fixedBlocks, ptMode, fromBlock, assignOpts) {
+  // Een speler met een vast aantal speelblokken (bv. een lichte blessure, of een speler die
+  // dit juist moet inhalen) wijkt bewust af van de rest - net als een uitvaller telt ze niet
+  // mee in de "max 1 blok verschil"-eerlijkheidscheck tussen de overige veldspelers.
+  const fullMatch = field.filter(p => injuries[p.id] == null && fixedBlocks[p.id] == null && keeperIds.indexOf(p.id) < 0);
   const fmIds = fullMatch.map(p => p.id);
   if (fmIds.length < 2) return blocks;
   const byId = {};
@@ -285,14 +288,24 @@ function buildSchedule(match, players, fromHalf) {
   const slots = Math.min(10, field.length);
   const blocks = prev.slice();
   const injuries = match.injuries || {};
+  // Vast aantal speelblokken voor een speler (bv. lichte blessure, of juist een speler die
+  // minder vaak heeft gespeeld en deze wedstrijd toch N blokken moet krijgen). Anders dan
+  // injuries (uit vanaf een bepaald blok) geldt dit voor de hele wedstrijd, en anders dan een
+  // bovengrens overrulet dit haar sterkte-gewicht volledig - zonder deze override zou zo'n
+  // speler onder Sterk/Zwak nooit boven haar natuurlijke (lagere) aandeel uitkomen, ook niet
+  // als hier expliciet een hoger aantal wordt ingesteld. Het algoritme verspreidt haar N
+  // blokken nog steeds over de wedstrijd (via dezelfde frac-gebaseerde planning hieronder)
+  // i.p.v. ze allemaal vooraan te zetten.
+  const fixedBlocks = match.fixedBlocks || {};
   for (let b = prev.length; b < 8; b++) {
-    const avail = field.filter(p => p.id !== keeperAt(b) && !(injuries[p.id] != null && b >= injuries[p.id]));
+    const avail = field.filter(p => p.id !== keeperAt(b) && !(injuries[p.id] != null && b >= injuries[p.id])
+      && !(fixedBlocks[p.id] != null && played[p.id] >= fixedBlocks[p.id]));
     const need = Math.min(10, avail.length);
     const frac = (b + 1) / 8;
     const prevOnSet = blocks[b - 1] ? Object.keys(blocks[b - 1].on).map(k => blocks[b - 1].on[k]) : null;
     const imp = (b < 2 || b >= 6) ? 1 : -0.6;
     const scored = avail.map(p => {
-      const E = Math.min(8, 8 * slots * weight(p, ptMode) / wsum);
+      const E = fixedBlocks[p.id] != null ? fixedBlocks[p.id] : Math.min(8, 8 * slots * weight(p, ptMode) / wsum);
       const deficit = E * frac - played[p.id];
       const sat = prevOnSet ? prevOnSet.indexOf(p.id) < 0 : false;
       const strengthNudge = ptMode === 'standaard' ? 0 : imp * 1 * ((ratingOf(p) - 70) / 100);
@@ -349,7 +362,7 @@ function buildSchedule(match, players, fromHalf) {
     on.forEach(p => { played[p.id]++; });
     blocks.push({ on: assignMap, bench: bench.map(p => p.id) });
   }
-  return enforceFairness(blocks, field, keeperIds, injuries, ptMode, prev.length, assignOpts);
+  return enforceFairness(blocks, field, keeperIds, injuries, fixedBlocks, ptMode, prev.length, assignOpts);
 }
 
 function halvesPlayed(schedule) {
@@ -386,6 +399,8 @@ export default function App() {
   const [newIsSub, setNewIsSub] = useState(false);
   const [injPlayer, setInjPlayer] = useState('');
   const [injFrom, setInjFrom] = useState('2');
+  const [fixedBlocksPlayer, setFixedBlocksPlayer] = useState('');
+  const [fixedBlocksValue, setFixedBlocksValue] = useState('4');
   const [fixtures, setFixtures] = useState([]);
   const [addFixtureOpen, setAddFixtureOpen] = useState(false);
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true });
@@ -420,6 +435,17 @@ export default function App() {
   const [lisaEditing, setLisaEditing] = useState(false);
   const [lisaTeamOptions, setLisaTeamOptions] = useState(null);
   const [lisaTeamsBusy, setLisaTeamsBusy] = useState(false);
+  // mijn.lisahockey.nl (aanwezigheid) - eigen state/doc, los van lisaConfig/lisaForm hierboven:
+  // dit token is admin-only leesbaar (lisaClubs/{clubId}/config/lisaMy, zie firestore.rules),
+  // niet coach-leesbaar zoals de clubwebsite-koppeling, en ligt één keer per club opgeslagen
+  // (clubId = lisaConfig.clubDudaId) i.p.v. gedupliceerd per team.
+  const [lisaMyConfig, setLisaMyConfig] = useState(null);
+  const [lisaMyForm, setLisaMyForm] = useState({ myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+  const [lisaMyError, setLisaMyError] = useState('');
+  const [lisaMyEditing, setLisaMyEditing] = useState(false);
+  const [attendance, setAttendance] = useState(null);
+  const [attendanceBusy, setAttendanceBusy] = useState(false);
+  const [attendanceError, setAttendanceError] = useState('');
   const [standings, setStandings] = useState([]);
   const [standingsUpdatedAt, setStandingsUpdatedAt] = useState(null);
   const [standingsBusy, setStandingsBusy] = useState(false);
@@ -595,6 +621,36 @@ export default function App() {
     });
   }, [currentTeamId, canSeeHistory]);
 
+  // mijn.lisahockey.nl (aanwezigheid) - admin-only leesbaar (zie firestore.rules), dus deze
+  // subscription overslaan i.p.v. een permission-denied te laten knallen voor een coach. Leeft
+  // onder lisaClubs/{clubDudaId}, dus zonder clubwebsite-koppeling (lisaConfig) weten we nog
+  // niet bij welke club dit team hoort en kunnen we 'm niet opzoeken.
+  const lisaMyClubId = lisaConfig?.clubDudaId || null;
+  useEffect(() => {
+    setLisaMyConfig(null);
+    setLisaMyForm({ myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+    setLisaMyEditing(false);
+    if (!lisaMyClubId || !isAdmin) return;
+    return onSnapshot(doc(db, 'lisaClubs', lisaMyClubId, 'config', 'lisaMy'), snap => {
+      const d = snap.data() || null;
+      setLisaMyConfig(d);
+      setLisaMyForm(d
+        ? { myFederationId: d.myFederationId || '', myAuthBasic: d.myAuthBasic || '', myAuthToken: d.myAuthToken || '' }
+        : { myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+    });
+  }, [lisaMyClubId, isAdmin]);
+
+  // Aanwezigheid (mijn.lisahockey.nl) - alleen voor teamleden/admin (zie firestore.rules), dus
+  // deze subscription overslaan i.p.v. een permission-denied te laten knallen als iemand geen
+  // teamlid is.
+  useEffect(() => {
+    setAttendance(null);
+    if (!currentTeamId || !isMyTeam) return;
+    return onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'attendance'), snap => {
+      setAttendance(snap.data() || null);
+    });
+  }, [currentTeamId, isMyTeam]);
+
   // Alle gebruikers, om per team te tonen wie er als coach aan gekoppeld is - alleen
   // beheerders mogen andermans users/{uid} lezen (zie firestore.rules).
   useEffect(() => {
@@ -697,6 +753,26 @@ export default function App() {
     catch (e) { setLisaError('Opslaan mislukt.'); }
   }
 
+  // Los van saveLisaConfig hierboven: schrijft naar lisaClubs/{clubId}/config/lisaMy, dat
+  // admin-only leesbaar is (zie firestore.rules) omdat dit token niet team-gescoped is - zie de
+  // toelichting bij de "Aanwezigheid (mijn.lisahockey.nl)"-sectie in de UI. clubId komt van de
+  // clubwebsite-koppeling hierboven (lisaConfig.clubDudaId), dus die moet eerst gezet zijn.
+  async function saveLisaMyConfig() {
+    if (!isAdmin || !lisaMyClubId) return;
+    setLisaMyError('');
+    const cfg = {
+      myFederationId: lisaMyForm.myFederationId.trim(),
+      myAuthBasic: lisaMyForm.myAuthBasic.trim(),
+      myAuthToken: lisaMyForm.myAuthToken.trim(),
+    };
+    if (!cfg.myFederationId || !cfg.myAuthBasic || !cfg.myAuthToken) {
+      setLisaMyError('Vul alle 3 velden in.');
+      return;
+    }
+    try { await setDoc(doc(db, 'lisaClubs', lisaMyClubId, 'config', 'lisaMy'), cfg); setLisaMyEditing(false); }
+    catch (e) { setLisaMyError('Opslaan mislukt.'); }
+  }
+
   async function importLisaMatches() {
     if (readOnly || !lisaConfig) return;
     setLisaBusy(true);
@@ -761,6 +837,24 @@ export default function App() {
       setStandingsError(e.message || 'Stand ophalen mislukt.');
     } finally {
       setStandingsBusy(false);
+    }
+  }
+
+  // Zelfde patroon als refreshStandings hierboven, maar dan voor de mijn.lisahockey.nl-
+  // aanwezigheid - ook hier moet de aanroep server-side (Cloud Function), zowel omdat het
+  // gepersonaliseerde token nooit in de client-bundle/netwerklog hoort te staan, als omdat de
+  // browser deze aanroep toch niet zelf mag doen (CORS staat alleen mijn.lisahockey.nl zelf toe).
+  async function refreshAttendance() {
+    if (!currentTeamId) return;
+    setAttendanceBusy(true);
+    setAttendanceError('');
+    try {
+      const call = httpsCallable(functions, 'refreshTeamAttendance');
+      await call({ teamId: currentTeamId });
+    } catch (e) {
+      setAttendanceError(e.message || 'Aanwezigheid ophalen mislukt.');
+    } finally {
+      setAttendanceBusy(false);
     }
   }
 
@@ -896,6 +990,24 @@ export default function App() {
     const newMatch = { ...match, injuries: inj };
     const sched = buildSchedule(newMatch, players, from || 0);
     setMatch({ ...newMatch, schedule: sched || match.schedule });
+  }
+
+  // Anders dan applyInjury hierboven (een reactieve wijziging tijdens de wedstrijd, vandaar
+  // "vanaf kwart"): dit is een vooraf-instelling voor de hele wedstrijd, dus net als de
+  // Speeltijdverdeling/Positietoewijzing-instellingen in Stap 2 wist dit het schema i.p.v. het
+  // meteen te herberekenen - "Schema (opnieuw) maken" verdeelt haar vaste aantal dan over de
+  // hele wedstrijd, niet alleen het resterende deel.
+  function applyFixedBlocks() {
+    if (!fixedBlocksPlayer) return;
+    const n = Math.max(1, Math.min(8, Number(fixedBlocksValue) || 1));
+    patchMatch({ fixedBlocks: { ...match.fixedBlocks, [fixedBlocksPlayer]: n }, schedule: null });
+    setFixedBlocksPlayer('');
+  }
+
+  function clearFixedBlocks(id) {
+    const mb = { ...match.fixedBlocks };
+    delete mb[id];
+    patchMatch({ fixedBlocks: mb, schedule: null });
   }
 
   // Notitie-vorm: { id, playerId, group, categoryId, categoryLabel, valence, text, quarter, half, createdAt }.
@@ -1147,9 +1259,26 @@ export default function App() {
   };
 
   const sel = m.selected || [];
+  // Aanwezigheid (mijn.lisahockey.nl) voor de huidige wedstrijd, zelfde datum+tegenstander-
+  // sleutel als importLisaMatches/refreshTeamAttendance gebruiken. Naam-matching is
+  // best-effort (exacte, hoofdletterongevoelige match op voor- + achternaam) - een speler die
+  // niet matcht krijgt gewoon geen kleurindicator, net als een wedstrijd die (nog) niet in de
+  // cache zit.
+  const currentFixtureForAttendance = fixtures.find(f => f.id === m.fixtureId);
+  const attendanceForMatch = currentFixtureForAttendance && attendance && attendance.byFixtureKey
+    ? attendance.byFixtureKey[currentFixtureForAttendance.date + '|' + currentFixtureForAttendance.opponent]
+    : null;
+  const ATTENDANCE_COLOR = { present: '#22e600', unknown: '#ffee00', absent: '#ff0033' };
+  const attendanceStatusFor = p => {
+    if (!attendanceForMatch) return null;
+    const fullName = (p.first + ' ' + p.last).trim().toLowerCase();
+    const hit = attendanceForMatch.persons.find(x => (x.name || '').trim().toLowerCase() === fullName);
+    return hit ? hit.status : null;
+  };
   const selectionChips = players.map(p => {
     const on = sel.indexOf(p.id) >= 0;
     const isK = m.keeperId === p.id;
+    const attColor = ATTENDANCE_COLOR[attendanceStatusFor(p)];
     return {
       key: p.id,
       label: isK ? displayFirst(p) + ' · keep' : displayFirst(p),
@@ -1163,6 +1292,7 @@ export default function App() {
           : on
             ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)'
             : 'background:transparent;color:var(--color-neutral-700);border:1px solid var(--color-neutral-400)')
+        + (attColor ? `;padding-bottom:2px;box-shadow:inset 0 -5px 0 ${attColor}` : '')
     };
   });
 
@@ -1337,6 +1467,13 @@ export default function App() {
     key: id,
     label: nameOf(id) + ' geblesseerd vanaf kwart ' + (Math.floor(m.injuries[id] / 2) + 1) + ' — klik om terug te zetten',
     clear: () => clearInjury(id)
+  }));
+
+  const fixedBlocksOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.fixedBlocks || {})[p.id] == null).map(p => ({ id: p.id, label: displayFirst(p) }));
+  const fixedBlocksList = Object.keys(m.fixedBlocks || {}).map(id => ({
+    key: id,
+    label: nameOf(id) + ' ' + m.fixedBlocks[id] + ' speelblok' + (m.fixedBlocks[id] === 1 ? '' : 'ken') + ' — klik om te verwijderen',
+    clear: () => clearFixedBlocks(id)
   }));
 
   const matchNoteChips = (m.notes || []).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(n => ({
@@ -2196,6 +2333,20 @@ export default function App() {
   function updateLogEntry(idx, changes) {
     patchMatch({ goalLog: (m.goalLog || []).map((e, i) => i === idx ? { ...e, ...changes } : e) });
   }
+  // Net als removeLogEntry, maar voor de hele stand in één keer - trekt voor elke eigen speler
+  // evenveel DP terug als ze in het (nu te wissen) logboek stonden, in plaats van de score/log
+  // leeg te maken zonder de DP-telling mee terug te draaien.
+  function resetLiveScore() {
+    if (readOnly) return;
+    const scorers = {};
+    (m.goalLog || []).forEach(e => {
+      if (e.team === 'us' && e.scorerId) scorers[e.scorerId] = (scorers[e.scorerId] || 0) + 1;
+    });
+    if (Object.keys(scorers).length) {
+      setPlayers(ps => ps.map(x => scorers[x.id] ? { ...x, dp: Math.max(0, (x.dp || 0) - scorers[x.id]) } : x));
+    }
+    patchMatch({ liveUs: 0, liveThem: 0, goalLog: [] });
+  }
   // Eén gedeelde tekst-opmaak voor een logregel (doelpunt of commentaar), zodat zowel de
   // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
   // afgelopen wedstrijd, via de wedstrijd zelf) dezelfde regel tonen — daarom home/opponentName
@@ -2299,7 +2450,7 @@ export default function App() {
             <div style={css('display:flex;align-items:baseline;justify-content:space-between')}>
               <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Live stand{m.liveEnded ? ' (afgesloten)' : ''}</span>
               {!m.liveEnded && (
-                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={() => patchMatch({ liveUs: 0, liveThem: 0, goalLog: [] })}>Reset</button>
+                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={resetLiveScore}>Reset</button>
               )}
             </div>
             <div style={css('display:flex;align-items:center;justify-content:space-around;gap:var(--space-3)')}>
@@ -2616,6 +2767,14 @@ export default function App() {
               <span style={css('font-size:15px;color:var(--color-neutral-700)')}>
                 {nSel} geselecteerd · {Math.max(0, nSel - 1)} veldspeelsters · {nSel >= 11 ? Math.max(0, nSel - 11) + ' op de bank per helft' : 'te weinig voor een volledig team'}
               </span>
+              {attendanceForMatch && (
+                <span style={css('font-size:13px;color:var(--color-neutral-700);display:flex;align-items:center;gap:10px')}>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.present }} /> aanwezig</span>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.unknown }} /> onbekend</span>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.absent }} /> afgemeld</span>
+                  {' '}(via mijn.lisahockey.nl{attendanceForMatch.field ? `, veld ${attendanceForMatch.field}` : ''})
+                </span>
+              )}
             </div>
             <div>
               <div style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);padding-bottom:6px')}>Team</div>
@@ -2737,6 +2896,24 @@ export default function App() {
                 De selectie is gewijzigd sinds dit schema is gemaakt. Klik op "Schema opnieuw maken" om de toegevoegde of verwijderde speelster(s) mee te nemen — het schema hieronder is nog gebaseerd op de vorige selectie.
               </div>
             )}
+
+            <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
+              <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Vast aantal speelblokken — bv. bij een lichte blessure, of een speler die minder vaak heeft gespeeld en dit toch moet halen</div>
+              <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
+                <select className="input" aria-label="Speler" style={css('max-width:220px')} value={fixedBlocksPlayer} onChange={e => setFixedBlocksPlayer(e.target.value)}>
+                  <option value="">— speler —</option>
+                  {fixedBlocksOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <input className="input" type="number" min="1" max="8" aria-label="Aantal speelblokken" style={css('max-width:100px')} value={fixedBlocksValue} onChange={e => setFixedBlocksValue(e.target.value)} />
+                <button type="button" className="btn btn-primary" disabled={readOnly || !fixedBlocksPlayer} onClick={applyFixedBlocks}>Instellen</button>
+              </div>
+              <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:70ch')}>Ze speelt dan precies dit aantal blokken (niet meer, niet minder — ook als haar sterkte volgens Sterk/Zwak eigenlijk minder of meer zou geven), verspreid over de hele wedstrijd, en telt niet mee in de eerlijkheidscheck van de overige veldspelers. Wijzigingen hier wissen het schema — klik daarna op "Schema (opnieuw) maken".</p>
+              {fixedBlocksList.length > 0 && (
+                <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap;padding-top:var(--space-1)')}>
+                  {fixedBlocksList.map(i => <button key={i.key} type="button" className="tag tag-accent-2" onClick={i.clear} style={{ cursor: 'pointer', border: 'none' }}>{i.label}</button>)}
+                </div>
+              )}
+            </div>
           </section>
 
           {sched && (
@@ -3735,6 +3912,54 @@ export default function App() {
                   )}
                   {lisaError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaError}</div>}
                   {lisaTeamOptions && <button type="button" className="btn btn-primary" style={css('align-self:flex-start')} disabled={!lisaForm.teamId} onClick={saveLisaConfig}>Koppeling opslaan</button>}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Bewust een aparte kaart/state van "Koppeling met clubwebsite" hierboven: dit token
+              is niet team-gescoped (het is gekoppeld aan wie 'm persoonlijk heeft ingelogd op
+              mijn.lisahockey.nl, en dat account kan elk team van de club zien - bevestigd
+              2026-09-05 via "Alle teams"), dus deze koppeling blijft bewust admin-only, ook in
+              de Firestore-rules (lisaClubs/{clubId}/config/lisaMy), i.p.v. coach-leesbaar zoals
+              config/lisa. Ligt daarom ook één keer per club opgeslagen i.p.v. per team - de
+              clubwebsite-koppeling hierboven (lisaConfig.clubDudaId) bepaalt welke club dat is,
+              dus die moet eerst gezet zijn voordat deze kaart iets kan tonen/opslaan. */}
+          {isAdmin && (
+            <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
+              <div className="card-title">Aanwezigheid (mijn.lisahockey.nl) — hele club</div>
+              {!lisaMyClubId ? (
+                <p className="card-body" style={css('margin:0')}>Koppel eerst de clubwebsite hierboven ("Koppeling met clubwebsite") — daaruit haalt deze koppeling het club-id, en die is nodig om deze (club-brede) koppeling op te kunnen slaan/tonen.</p>
+              ) : (
+                <>
+                  {lisaMyConfig ? (
+                    <>
+                      <p className="card-body" style={css('margin:0')}>Gekoppeld. Alleen zichtbaar/wijzigbaar voor een beheerder — dit token geeft toegang tot alle teams van de club (niet alleen {ownTeamName}), en wordt dus maar één keer voor de hele club opgeslagen.</p>
+                      {lisaMyError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaMyError}</div>}
+                      <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+                        <button type="button" className="btn btn-secondary" disabled={attendanceBusy} onClick={refreshAttendance}>{attendanceBusy ? 'Bezig…' : 'Aanwezigheid ophalen'}</button>
+                        <button type="button" className="btn btn-ghost" onClick={() => setLisaMyEditing(true)}>Koppeling wijzigen</button>
+                      </div>
+                      {attendanceError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{attendanceError}</div>}
+                      {attendance && attendance.updatedAt && (
+                        <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700)')}>Aanwezigheid laatst opgehaald: {new Date(attendance.updatedAt).toLocaleString('nl-NL')}.</p>
+                      )}
+                    </>
+                  ) : null}
+                  {(!lisaMyConfig || lisaMyEditing) && (
+                    <>
+                      <p className="card-body" style={css('margin:0')}>
+                        Log in op mijn.lisahockey.nl, open DevTools Network-tab, en klik een wedstrijd open. Bij Request Headers
+                        van het request naar <code>/api/v1/my/clubs/{lisaMyClubId}/matches/...</code> vind je de <code>Authorization</code>-
+                        en <code>X-Lisa-Auth-Token</code>-waarden. Het federatie-id komt van <code>/api/v1/my/federations?domain=mijn.lisahockey.nl</code>.
+                      </p>
+                      <div className="field"><label htmlFor="lc5">Federatie-id</label><input className="input" id="lc5" type="text" value={lisaMyForm.myFederationId} onChange={e => setLisaMyForm(f => ({ ...f, myFederationId: e.target.value }))} /></div>
+                      <div className="field"><label htmlFor="lc6">Authorization-header</label><input className="input" id="lc6" type="text" placeholder="Basic ..." value={lisaMyForm.myAuthBasic} onChange={e => setLisaMyForm(f => ({ ...f, myAuthBasic: e.target.value }))} /></div>
+                      <div className="field"><label htmlFor="lc7">X-Lisa-Auth-Token</label><input className="input" id="lc7" type="text" value={lisaMyForm.myAuthToken} onChange={e => setLisaMyForm(f => ({ ...f, myAuthToken: e.target.value }))} /></div>
+                      {lisaMyError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaMyError}</div>}
+                      <button type="button" className="btn btn-primary" style={css('align-self:flex-start')} onClick={saveLisaMyConfig}>Koppeling opslaan</button>
+                    </>
+                  )}
                 </>
               )}
             </div>

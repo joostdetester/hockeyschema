@@ -344,7 +344,7 @@ textarea.input { min-height: 90px; resize: vertical; }
 
 /* — info dot (hover-only tooltip) — */
 .info-dot { position: relative; display: inline-flex; vertical-align: middle; }
-.info-dot-tip { display: none; }
+.info-dot-tip { display: none; text-transform: none; letter-spacing: normal; }
 .info-dot:hover .info-dot-tip, .info-dot:focus-within .info-dot-tip { display: block; }
 
 /* — toggle switch — */

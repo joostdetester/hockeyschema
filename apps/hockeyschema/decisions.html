@@ -204,6 +204,7 @@
     border-top: 1px solid var(--line);
   }
   .entry:last-child { padding-bottom: 4px; }
+  .tagcol { display: flex; flex-direction: column; gap: 5px; justify-self: start; }
   .tag {
     justify-self: start;
     font-family: 'IBM Plex Mono', monospace;
@@ -218,6 +219,12 @@
   .tag.nieuw { background: var(--turf-tint); color: var(--turf-ink); }
   .tag.wijziging { background: var(--blue-tint); color: var(--blue); }
   .tag.bugfix { background: var(--gold-tint); color: var(--gold); }
+  .entry-date {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--slate);
+    white-space: nowrap;
+  }
 
   .entry h4 {
     font-family: 'Archivo', sans-serif;
@@ -247,6 +254,7 @@
 
   @media (max-width: 560px) {
     .entry { grid-template-columns: 1fr; gap: 6px; }
+    .tagcol { flex-direction: row; align-items: center; }
   }
 
   footer {
@@ -291,7 +299,7 @@
     <h3 class="sub">Speeltijdverdeling</h3>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Max. 1 speelblok verschil</h4>
         <p>Bij een volledige wedstrijd (geen uitvaller) mogen twee veldspeelsters nooit meer dan 1 speelblok van elkaar verschillen. Wordt na het genereren afgedwongen (<code>enforceFairness</code>), met behoud van de garantie dat wie de 1e helft van een kwart zit, gegarandeerd de 2e helft speelt.</p>
@@ -300,7 +308,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Sterk / zwak / standaard blijft apart</h4>
         <p>De bestaande drie-keuze voor sterkte-gewicht blijft ongewijzigd naast de nieuwe Positietoewijzing-toggles hieronder, in plaats van erin opgenomen te worden.</p>
@@ -310,7 +318,7 @@
     <h3 class="sub">Positietoewijzing — drie nieuwe schuifjes</h3>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Zone-sterkte, Continuïteit, Correctieronde op voorkeur</h4>
         <p>Drie losse aan/uit-schuifjes (groen = aan, rood = uit), elk met een hover-only info-icoon en een tekst die met "Meer kans op …" begint zodra de schuif aan staat. <strong>Zone-sterkte</strong>: de as krijgt bij voorkeur de sterkste speelsters. <strong>Continuïteit</strong>: voorkeur om op dezelfde positie te blijven staan als het vorige blok. <strong>Correctieronde op voorkeur</strong>: ruilt iemand zonder voorkeur voor haar positie met een bankspeelster die dat wél heeft — kan de max‑1‑regel hierboven overrulen.</p>
@@ -319,7 +327,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Continuïteit-tekst herzien</h4>
         <p>"Meer/Minder kans op dezelfde positie als vorig blok" in plaats van een tekst over "wisselingen" — zodat alle drie schuifjes dezelfde richting hanteren: aan = meer.</p>
@@ -329,7 +337,7 @@
     <h3 class="sub">Selectie &amp; Stap 2</h3>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>"Iedereen selecteren" gesplitst</h4>
         <p>Twee knoppen in plaats van één: <strong>Vaste spelers selecteren</strong> en <strong>Ook invallers selecteren</strong>, zodat het verschil expliciet is.</p>
@@ -337,7 +345,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Vaste keeper automatisch ingevuld</h4>
         <p>Zodra de vaste keeper in de selectie zit en er nog geen keeper gekozen is voor deze wedstrijd, vult Stap 2 zich vanzelf. Een handmatig gekozen keeper wordt nooit overschreven.</p>
@@ -345,7 +353,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Melding bij verouderd schema</h4>
         <p>Wijzig je de selectie nadat het schema al gemaakt is, dan verschijnt een melding dat het schema opnieuw gemaakt moet worden. Het bestaande schema blijft staan tot je zelf op de knop klikt — knoptekst blijft bewust <strong>"Schema opnieuw maken"</strong>.</p>
@@ -360,7 +368,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Bewerkbaar in plaats van alleen-lezen</h4>
         <p>Elke rol (1e / 2e / 3e keus) is nu een dropdown i.p.v. platte tekst, automatisch gevuld vanuit de seizoensvolgorde maar alleen met spelers die voor déze wedstrijd geselecteerd én niet uitgevallen zijn.</p>
@@ -368,7 +376,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Automatisch opschuiven</h4>
         <p>Een wegvallende speler (niet geselecteerd, of tijdens de wedstrijd geblesseerd) wordt uit de rij gefilterd i.p.v. alleen leeggemaakt — de 2e keus wordt dan vanzelf de 1e.</p>
@@ -376,7 +384,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag bugfix">bugfix</span>
+      <div class="tagcol"><span class="tag bugfix">bugfix</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Geen dubbele speler binnen één rol</h4>
         <p>Een speler die al bij een andere keuze van dezelfde rol staat, verdwijnt uit de opties van de overige keuzes — in zowel de wedstrijd- als de seizoenstabel.</p>
@@ -384,7 +392,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Per-wedstrijd override, seizoen blijft intact</h4>
         <p>Handmatige aanpassingen gelden alleen voor deze wedstrijd (<code>scOverrides</code>); de volgende wedstrijd begint weer bij de seizoensvolgorde. Een <strong>"Haal standaard op"</strong>-link per groep wist eigen aanpassingen voor die groep.</p>
@@ -392,7 +400,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Visuele stijl gelijk aan seizoenstabel</h4>
         <p>Rol in grijs vak, kolommen 1e/2e/3e keus — enige verschil: de rolnaam is hier niet bewerkbaar.</p>
@@ -402,7 +410,7 @@
     <h3 class="sub">Strafcornerschema — nieuw overzicht</h3>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Per speelblok wie de rol echt uitvoert</h4>
         <p>8 rijen (1e/2e helft per kwart) tonen de hoogste keus per rol die op dat moment ook echt in het veld staat.</p>
@@ -410,7 +418,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag bugfix">bugfix</span>
+      <div class="tagcol"><span class="tag bugfix">bugfix</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Rollen in volgorde toegekend</h4>
         <p>Eén speler kan niet voor twee rollen tegelijk in hetzelfde blok worden ingezet — wie al aan een eerdere rol is toegewezen, valt af bij de volgende, die dan naar haar eigen 2e of 3e keus kijkt.</p>
@@ -425,7 +433,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag bugfix">bugfix</span>
+      <div class="tagcol"><span class="tag bugfix">bugfix</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Tijdswijzigingen werden genegeerd</h4>
         <p>Een al bestaande wedstrijd (zelfde datum + tegenstander) werd bij hernieuwde import overgeslagen, ook als de tijd of thuis/uit inmiddels gewijzigd was — vandaar dat alleen "verwijderen en opnieuw importeren" werkte.</p>
@@ -441,7 +449,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Printoptie "Wedstrijdschema"</h4>
         <p>Naast Strafcorner en Speeltijd, standaard aangevinkt zodat bestaand gedrag hetzelfde blijft tenzij je hem uitzet.</p>
@@ -449,7 +457,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Geen app-header meer op de afdruk</h4>
         <p>Het bovenste blok (logo, titel, "TEGEN … · 4 × 17.5 MIN") print niet meer — de wedstrijdtitel leeft voort in de nieuwe kop-per-pagina hieronder.</p>
@@ -457,7 +465,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag nieuw">nieuw</span>
+      <div class="tagcol"><span class="tag nieuw">nieuw</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Wedstrijdschema en Strafcornerschema splitsen elk in 2 pagina's</h4>
         <p>Kwart 1+2 op de eerste, kwart 3+4 op de tweede. Elke pagina krijgt een eigen kop: HCRB-logo + titel (bv. "Wedstrijdschema kwart 1 en 2"), met daaronder klein de wedstrijddetails — team, datum, tijd.</p>
@@ -465,7 +473,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag bugfix">bugfix</span>
+      <div class="tagcol"><span class="tag bugfix">bugfix</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Geen onbedoelde lege eerste pagina</h4>
         <p>Een paginabreuk vóór een blok wordt alleen ingezet als er al content aan voorafgaat op die afdruk — anders levert een breuk vóór het allereerste element een lege pagina op.</p>
@@ -473,7 +481,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Strafcorner-bewerktabellen printen nooit meer</h4>
         <p>Ook niet met de Strafcorner-printoptie aan — alleen het Strafcornerschema (per-blok overzicht) print nog.</p>
@@ -481,7 +489,7 @@
     </div>
 
     <div class="entry">
-      <span class="tag wijziging">wijziging</span>
+      <div class="tagcol"><span class="tag wijziging">wijziging</span><span class="entry-date">1–2 sep 2026</span></div>
       <div>
         <h4>Watermerk print niet meer</h4>
         <p>Het HCRB-logo op de achtergrond blijft op het scherm zichtbaar, maar verdwijnt uit de afdruk.</p>

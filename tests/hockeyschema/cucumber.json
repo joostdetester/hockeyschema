@@ -1,7 +1,8 @@
 {
   "default": {
     "paths": ["features/**/*.feature"],
-    "require": ["steps/**/*.ts"],
+    "require": ["steps/**/*.ts", ".vscode/cucumber-glue/**/*.js"],
+    "requireModule": ["ts-node/register"],
     "publishQuiet": true
   }
 }

@@ -1,0 +1,500 @@
+<title>Test-dekking todo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,500;0,700;0,800;1,600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --paper: #f3f6f1;
+    --panel: #ffffff;
+    --ink: #182019;
+    --ink-soft: #3c453e;
+    --slate: #5c6a60;
+    --line: #d7ddd3;
+    --turf: #2f6b4a;
+    --turf-ink: #1f4a33;
+    --turf-tint: #e4efe6;
+    --gold: #a3721f;
+    --gold-tint: #f6ecd8;
+    --blue: #35577c;
+    --blue-tint: #e6edf4;
+    --red: #a3392f;
+    --red-tint: #f7e6e3;
+    --shadow: 0 1px 2px rgba(24,32,25,0.06), 0 8px 24px -16px rgba(24,32,25,0.25);
+    /* Masthead is a fixed brand band, not a theme-following surface - deliberately
+       constant across light/dark so it never redefines inside a themed block. */
+    --band: #1f4a33;
+    --band-line: rgba(255,255,255,0.16);
+    --band-chip: rgba(255,255,255,0.07);
+    --band-ink: #f2f7f2;
+    --band-eyebrow: #bfe0cc;
+    --band-lede: #d9ebdf;
+    --band-stat-label: #cfe6d8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0f1712;
+      --panel: #16211a;
+      --ink: #e9efe8;
+      --ink-soft: #c2cdc4;
+      --slate: #93a196;
+      --line: #263229;
+      --turf: #6fc396;
+      --turf-ink: #a9e2c1;
+      --turf-tint: #17281e;
+      --gold: #d8ab5c;
+      --gold-tint: #2a2213;
+      --blue: #8fb3da;
+      --blue-tint: #182432;
+      --red: #e0968c;
+      --red-tint: #2c1815;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -18px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0f1712;
+    --panel: #16211a;
+    --ink: #e9efe8;
+    --ink-soft: #c2cdc4;
+    --slate: #93a196;
+    --line: #263229;
+    --turf: #6fc396;
+    --turf-ink: #a9e2c1;
+    --turf-tint: #17281e;
+    --gold: #d8ab5c;
+    --gold-tint: #2a2213;
+    --blue: #8fb3da;
+    --blue-tint: #182432;
+    --red: #e0968c;
+    --red-tint: #2c1815;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 28px -18px rgba(0,0,0,0.6);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  ::selection { background: var(--turf-tint); color: var(--turf-ink); }
+
+  a { color: var(--turf-ink); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--turf); outline-offset: 2px; }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---- masthead ---- */
+  header.masthead {
+    background: var(--band);
+    color: var(--band-ink);
+    padding: 46px 24px 40px;
+  }
+  .masthead-inner { max-width: 860px; margin: 0 auto; }
+  .eyebrow {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--band-eyebrow);
+    margin: 0 0 10px;
+  }
+  h1.title {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 800;
+    font-style: italic;
+    font-size: clamp(34px, 5.4vw, 50px);
+    line-height: 1.02;
+    letter-spacing: -0.01em;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  .masthead p.lede {
+    margin: 0;
+    max-width: 60ch;
+    color: #d9ebdf;
+    font-size: 17px;
+  }
+  .stat-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 28px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 3px;
+    padding: 9px 14px;
+  }
+  .stat b {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+  }
+  .stat span {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6d8;
+  }
+
+  /* ---- toc ---- */
+  nav.toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    margin: 34px 0 0;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+  }
+  nav.toc a {
+    color: var(--slate);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+  nav.toc a:hover { color: var(--turf-ink); border-bottom-color: var(--turf); }
+
+  /* ---- page sections ---- */
+  section.page { margin-top: 56px; }
+  section.page:first-of-type { margin-top: 44px; }
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    border-bottom: 3px solid var(--ink);
+    padding-bottom: 10px;
+    margin-bottom: 22px;
+  }
+  .page-head h2 {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 800;
+    font-size: 27px;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .page-head .where {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--slate);
+    letter-spacing: 0.02em;
+  }
+
+  p.intro { color: var(--ink-soft); margin: 0 0 8px; }
+
+  h3.sub {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--turf-ink);
+    margin: 30px 0 12px;
+  }
+  h3.sub:first-child { margin-top: 0; }
+
+  /* ---- entries ---- */
+  .entry {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 18px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+  }
+  .entry:last-child { padding-bottom: 4px; }
+  .tagcol { display: flex; flex-direction: column; gap: 5px; justify-self: start; }
+  .tag {
+    justify-self: start;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    padding: 3px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+    height: fit-content;
+  }
+  .tag.nieuw { background: var(--turf-tint); color: var(--turf-ink); }
+  .tag.wijziging { background: var(--blue-tint); color: var(--blue); }
+  .tag.bugfix { background: var(--gold-tint); color: var(--gold); }
+  .tag.critical { background: var(--red-tint); color: var(--red); }
+  .entry-date {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--slate);
+    white-space: nowrap;
+  }
+
+  .entry h4 {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 700;
+    font-style: italic;
+    font-size: 17px;
+    margin: 0 0 5px;
+    color: var(--ink);
+  }
+  .entry p { margin: 0; color: var(--ink-soft); }
+  .entry p + p { margin-top: 8px; }
+  .entry code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.86em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 1px 5px;
+  }
+  .entry .why {
+    margin-top: 8px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+    color: var(--slate);
+    font-size: 15.5px;
+  }
+
+  /* ---- reference table (tagging schema) ---- */
+  table.ref {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+    margin: 0 0 8px;
+  }
+  table.ref th, table.ref td {
+    text-align: left;
+    padding: 9px 10px;
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.ref thead th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--slate);
+    border-top: none;
+    padding-bottom: 6px;
+  }
+  table.ref td.tagcell { white-space: nowrap; }
+
+  /* ---- status table ---- */
+  .table-wrap { overflow-x: auto; }
+  table.status {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+    min-width: 620px;
+  }
+  table.status th, table.status td {
+    text-align: left;
+    padding: 8px 10px;
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.status thead th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--slate);
+    border-top: none;
+    padding-bottom: 8px;
+  }
+  table.status td.risk { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+
+  /* ---- checklist (volgende stappen) ---- */
+  ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
+  ol.steps li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+  }
+  ol.steps li:last-child { padding-bottom: 4px; }
+  ol.steps li::before {
+    content: counter(step);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--slate);
+  }
+  ol.steps li.done { color: var(--slate); }
+  ol.steps li.done span.txt { text-decoration: line-through; text-decoration-color: var(--line); }
+
+  @media (max-width: 560px) {
+    .entry { grid-template-columns: 1fr; gap: 6px; }
+    .tagcol { flex-direction: row; align-items: center; }
+  }
+
+  footer {
+    max-width: 860px;
+    margin: 64px auto 0;
+    padding: 20px 24px 0;
+    border-top: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--slate);
+  }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Hockeyschema · Testautomatisering</p>
+    <h1 class="title">Test-dekking todo</h1>
+    <p class="lede">Voortgang van de Playwright/Cucumber-dekking, risk-based opgezet — bijgehouden in <code style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);padding:1px 6px;border-radius:2px;color:#fff">tests/hockeyschema/todo.md</code> en hier alleen ter overzicht weergegeven.</p>
+    <div class="stat-row">
+      <div class="stat"><b>3</b><span>Af</span></div>
+      <div class="stat"><b>3</b><span>In behandeling</span></div>
+      <div class="stat"><b>6</b><span>Ontbreekt</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <nav class="toc">
+    <a href="#tagging">Tagging-schema</a>
+    <a href="#status">Pagina's — status</a>
+    <a href="#geimplementeerd">Al geïmplementeerd</a>
+    <a href="#openstaand">Nog openstaand</a>
+    <a href="#vervolgstappen">Volgende stappen</a>
+  </nav>
+
+  <section class="page" id="tagging">
+    <div class="page-head">
+      <h2>Tagging-schema</h2>
+      <span class="where">risk-based · vastgesteld</span>
+    </div>
+    <p class="intro">Elk scenario krijgt een type-tag (<code>@ui</code>/<code>@api</code>/<code>@accessibility</code>/<code>@e2e</code>/<code>@db</code>) plus precies één risico-tag uit onderstaande vier-punts-schaal. <code>@smoke</code> blijft daarnaast bestaan als losse, orthogonale vlag ("snelle sanity-check die op elke build moet slagen") — een scenario kan dus <code>@ui @critical @smoke</code> zijn.</p>
+    <table class="ref">
+      <thead><tr><th>Tag</th><th>Betekenis</th></tr></thead>
+      <tbody>
+        <tr><td class="tagcell"><span class="tag critical">critical</span></td><td>Bug hier = de coach zit er <em>tijdens</em> de wedstrijd mee vast (schema kwijt, live score/DP fout, kan niet opslaan). Draait op elke build/PR.</td></tr>
+        <tr><td class="tagcell"><span class="tag bugfix">high</span></td><td>Belangrijke functionaliteit, geen wedstrijd-blokkerende impact maar wel vervelend/zichtbaar.</td></tr>
+        <tr><td class="tagcell"><span class="tag wijziging">medium</span></td><td>Nuttig maar minder tijdsdruk — normale regressie.</td></tr>
+        <tr><td class="tagcell"><span class="tag nieuw">low</span></td><td>Randgevallen, cosmetisch, zelden gebruikte paden.</td></tr>
+      </tbody>
+    </table>
+    <p class="intro" style="margin-top:14px">Prioriteitsvolgorde: <strong>1.</strong> Live/Wedstrijdmodus + Wedstrijdschema (kernflows tijdens de wedstrijd zelf) — <strong>2.</strong> Team + Strafcorner — <strong>3.</strong> Programma + Standen + Historie — <strong>4.</strong> Ouders + Notities.</p>
+  </section>
+
+  <section class="page" id="status">
+    <div class="page-head">
+      <h2>Pagina's — status</h2>
+      <span class="where">alle tabbladen</span>
+    </div>
+    <div class="table-wrap">
+      <table class="status">
+        <thead><tr><th>Pagina/tabblad</th><th>Scenario's</th><th>Steps/page object</th><th>Risico</th><th>Notities</th></tr></thead>
+        <tbody>
+          <tr><td>Homepage</td><td>klaar</td><td>klaar</td><td class="risk">@smoke</td><td>af</td></tr>
+          <tr><td>Accessibility scan</td><td>klaar</td><td>klaar</td><td class="risk">—</td><td>af, dekt alle tabs via één scan</td></tr>
+          <tr><td>API health check</td><td>klaar</td><td>klaar</td><td class="risk">@smoke</td><td>af</td></tr>
+          <tr><td><strong>Wedstrijdschema</strong></td><td>klaar (draft)</td><td>ontbreekt</td><td class="risk">@critical</td><td>volgende stap: samen doorlopen</td></tr>
+          <tr><td><strong>Live/Wedstrijdmodus</strong></td><td>klaar (draft)</td><td>ontbreekt</td><td class="risk">@critical/@high/@medium</td><td>volgende stap: samen doorlopen — DP-bug net hier gefixt, bevat regressietest daarvoor</td></tr>
+          <tr><td>Team</td><td>klaar (draft)</td><td>ontbreekt</td><td class="risk">@high (voorstel)</td><td>scenario's staan klaar, later doorlopen</td></tr>
+          <tr><td>Strafcorner</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td></td></tr>
+          <tr><td>Programma</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td></td></tr>
+          <tr><td>Standen</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td></td></tr>
+          <tr><td>Historie</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td></td></tr>
+          <tr><td>Ouders</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td></td></tr>
+          <tr><td>Notities</td><td>ontbreekt</td><td>ontbreekt</td><td class="risk">?</td><td>nieuw deze sessie gebouwd</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="page" id="geimplementeerd">
+    <div class="page-head">
+      <h2>Al geïmplementeerd</h2>
+      <span class="where">deze sessie</span>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag nieuw">klaar</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>Login-infrastructuur</h4>
+        <p><code>config/project.config.ts</code> + <code>.env.example</code> hebben nu <code>USER_EMAIL</code>/<code>USER_PASSWORD</code>, per <code>ai/repo-structure.md</code>'s eigen, tot nu toe nooit aangesloten plan.</p>
+        <p class="why">Er is nog geen echt test-account — zonder een werkend <code>USER_EMAIL</code>/<code>USER_PASSWORD</code> in de lokale <code>.env</code> faalt elke ingelogde test bij de loginstap. Nooit een eigen echt account hiervoor gebruiken.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag nieuw">klaar</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>HomePage page object</h4>
+        <p><code>HomePage.login()</code> en <code>HomePage.switchToWedstrijdmodus()</code> in <code>pageobjects/home.page.ts</code>.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag nieuw">klaar</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>Gedeelde Background-stappen</h4>
+        <p><code>steps/common.steps.ts</code>: "the user is logged in as a team member" en "the user switches to Wedstrijdmodus" — lost de "undefined step"-kringeltjes op in Team/Wedstrijdschema/Live-Wedstrijdmodus. De scenario's zelf (de stappen ná de Background) staan nog als <code>test.fixme</code> — nog niet geïmplementeerd.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag nieuw">klaar</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>Risico-tags in Allure-severity-mapping</h4>
+        <p><code>@critical</code>/<code>@high</code>/<code>@medium</code>/<code>@low</code> zijn nu ook verwerkt in de Allure-severity-mapping in <code>steps/fixtures.ts</code> (eerst alleen <code>@critical</code>/<code>@smoke</code>).</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="openstaand">
+    <div class="page-head">
+      <h2>Nog openstaand</h2>
+      <span class="where">blokkeert verdere voortgang</span>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag critical">blokkerend</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>Echt test-account regelen</h4>
+        <p>Een test-account aanmaken/koppelen per omgeving (test/acceptance/productie) voor <code>USER_EMAIL</code>/<code>USER_PASSWORD</code> — zonder dat kan geen enkele ingelogde test daadwerkelijk draaien.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="tagcol"><span class="tag bugfix">open</span><span class="entry-date">3 sep 2026</span></div>
+      <div>
+        <h4>project-context.md invullen</h4>
+        <p><code>ai/project-context.md</code> is nog een ongewijzigde template ("Fill this in for the actual system under test once known") — nooit ingevuld voor deze app. Zou ingevuld moeten worden zodat een volgende sessie niet opnieuw alles hoeft te herleiden.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="vervolgstappen">
+    <div class="page-head">
+      <h2>Volgende stappen</h2>
+      <span class="where">in volgorde</span>
+    </div>
+    <ol class="steps">
+      <li class="done"><span class="txt">Samen tagging-schema + prioriteiten vaststellen</span></li>
+      <li class="done"><span class="txt">Background-stappen (login/tab/Wedstrijdmodus) implementeren</span></li>
+      <li><span class="txt">Test-account regelen zodat er daadwerkelijk gedraaid kan worden</span></li>
+      <li><span class="txt">Wedstrijdschema-scenario's (al geschreven) samen doorlopen — kloppen ze nog, missen er @critical-flows?</span></li>
+      <li><span class="txt">De losse stappen ín de Live/Wedstrijdmodus- en Wedstrijdschema-scenario's implementeren (steps + page objects), groen krijgen in CI</span></li>
+      <li><span class="txt">project-context.md invullen</span></li>
+      <li><span class="txt">Daarna verder met prioriteit 2 (Team + Strafcorner), enzovoort</span></li>
+    </ol>
+  </section>
+
+</div>
+
+<footer>
+  Hockeyschema · bron: tests/hockeyschema/todo.md · laatst bijgewerkt 3 sep 2026
+</footer>

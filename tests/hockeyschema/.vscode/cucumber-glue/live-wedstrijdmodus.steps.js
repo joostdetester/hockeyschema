@@ -1,0 +1,47 @@
+/*
+ * IDE-only step map for Gherkin diagnostics (cucumber-official extension).
+ * live-wedstrijdmodus.feature's steps have no real implementation yet
+ * (draft, per todo.md) - these stubs only silence editor squiggles.
+ * Background steps and "checks/unchecks {string}" come from common.steps.js.
+ */
+import { Given, Then, When } from '@cucumber/cucumber'
+
+Given('{string} is unchecked', function (p1) {})
+Then('the {string} tab becomes visible to a logged-out visitor', function (p1) {})
+Then('the {string} tab is no longer visible to a logged-out visitor', function (p1) {})
+Given('the live score is 0-0', function () {})
+Given('a player has 0 goals recorded for the season', function () {})
+When('the user logs a goal for that player', function () {})
+Then("the live score for the team's own side increases by one", function () {})
+Then("that player's season goal tally increases by one", function () {})
+Given('a goal has just been logged for a player', function () {})
+When('the user removes that goal via the {string} control', function (p1) {})
+Then("the live score for the team's own side decreases by one", function () {})
+Then("that player's season goal tally decreases by one again", function () {})
+Given('two different players have each scored a goal in the current match', function () {})
+When('the user resets the live score', function () {})
+Then('the live score for both teams is 0-0', function () {})
+Then('the goal log for the current match is empty', function () {})
+Then("both players' season goal tallies are back to what they were before either goal", function () {})
+Given('the {string} dialog is open', function (p1) {})
+When('the user selects a player without confirming', function () {})
+Then('the live score has not changed yet', function () {})
+When('the user confirms with {string}', function (p1) {})
+Given('the match clock is at its starting value and not running', function () {})
+When('the user starts the clock', function () {})
+Then('the clock counts down', function () {})
+When('the user pauses the clock', function () {})
+Then('the clock stops counting down', function () {})
+When('the user resets the clock', function () {})
+Then('the clock returns to its starting value', function () {})
+Given('the match clock is running', function () {})
+Then('the manual-set field shows the same time as the running clock', function () {})
+When('the user types a value into the manual-set field', function () {})
+Then('the manual-set field keeps showing what the user typed, not the running clock', function () {})
+When('the user adds a team note for the current quarter', function () {})
+Then("the note appears in the match's notes overview", function () {})
+Given('the match has been started', function () {})
+When('the user chooses {string}', function (p1) {})
+Then('a confirmation asking to confirm the final score is shown', function () {})
+When('the user confirms', function () {})
+Then('the match is recorded as finished with that final score', function () {})
