@@ -423,6 +423,10 @@ textarea.input { min-height: 90px; resize: vertical; }
    lichte tint, niet vol, zodat de tekst leesbaar blijft. */
 .table tbody tr:nth-child(odd) { background: color-mix(in srgb, #003060 8%, transparent); }
 .table tbody tr:hover { background: color-mix(in srgb, #003060 14%, transparent); }
+/* Blijft zichtbaar bovenin bij het naar beneden scrollen van een lange tabel (bv. Team, met veel
+   spelers en kolommen) - expliciete achtergrond nodig, anders schemeren de onderliggende rijen
+   erdoorheen zodra 'm vastgeplakt raakt. */
+.table-sticky-head th { position: sticky; top: 0; z-index: 1; background: var(--color-bg); }
 
 /* — dialog — */
 .dialog-backdrop {

@@ -1597,7 +1597,10 @@ export default function App() {
     // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
     // hier al kant-en-klaar door de filter hieronder.
     ...(m.liveOpened ? [['live', 'Live']] : []),
-    ...(isAdmin ? [['inlog', 'Inlogpogingen'], ['wijzigingen', 'Wijzigingen']] : []),
+    ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
+    // Wijzigingen: voor admin én coaches/managers van dit team - niet voor een uitgelogde
+    // bezoeker of iemand zonder rol bij dit team.
+    ...((isMyTeam || myRoleForCurrentTeam === 'manager') ? [['wijzigingen', 'Wijzigingen']] : []),
   ].filter(t => t[0] === 'teams' ? !!user : ((user && !limitedNav) || !LOGGED_IN_ONLY_TABS.includes(t[0]))).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
@@ -2017,7 +2020,14 @@ export default function App() {
 
   const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
   const kpCount = players.filter(pl => pl.fixedKeeper).length;
-  const teamRows = players.map(p => ({
+  const teamRows = players.map(p => {
+  // Voorkeurscijfers moeten oplopend zonder gaten zijn - staan er al 1, 2 en 3, dan is 4 de
+  // eerstvolgende die nog gekozen mag worden (5/6 pas als 4 ook bezet is). maxOption is dus de
+  // hoogste al gebruikte waarde + 1 (met 6 als plafond); een cel biedt altijd de al gebruikte
+  // waarden aan (die schuiven de rest op, zie onChange hieronder) plus precies één nieuwe.
+  const usedPrefs = Object.values(p.prefs);
+  const maxOption = Math.min(6, (usedPrefs.length ? Math.max(...usedPrefs) : 0) + 1);
+  return {
     key: p.id,
     name: p.first + ' ' + p.last,
     posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
@@ -2033,11 +2043,35 @@ export default function App() {
       key: pos.k,
       value: p.prefs[pos.k] ? String(p.prefs[pos.k]) : '',
       forbidden: !!(p.avoid && p.avoid[pos.k]),
+      maxOption,
+      // Voorkeurscijfers moeten per speelster altijd een oplopende reeks zonder gaten vormen (zie
+      // maxOption hierboven) - een wijziging schuift daarom de andere posities op, net als het
+      // verplaatsen van een item in een gerangschikte lijst: van 5 naar 1 (bij 1 t/m 5 gevuld)
+      // schuift 1-4 een plek op naar 2-5; van 1 naar 4 schuift 2-4 een plek terug naar 1-3; leeg
+      // maken schuift alles ná de oude waarde een plek naar voren (sluit het gat); een nieuwe
+      // waarde invullen (was leeg) schuift alles vanaf die waarde een plek naar achteren.
       onChange: e => {
         if (readOnly) return;
         const raw = e.target.value;
+        const oldValue = p.prefs[pos.k];
+        const newValue = raw === '' ? null : Number(raw);
         const prefs = { ...p.prefs };
-        if (raw === '' || Number(raw) <= 0) delete prefs[pos.k]; else prefs[pos.k] = Number(raw);
+        if (newValue == null) {
+          if (oldValue != null) {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] > oldValue) prefs[k] -= 1; });
+          }
+          delete prefs[pos.k];
+        } else if (oldValue == null) {
+          Object.keys(prefs).forEach(k => { if (prefs[k] >= newValue) prefs[k] += 1; });
+          prefs[pos.k] = newValue;
+        } else if (newValue !== oldValue) {
+          if (newValue < oldValue) {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] >= newValue && prefs[k] < oldValue) prefs[k] += 1; });
+          } else {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] > oldValue && prefs[k] <= newValue) prefs[k] -= 1; });
+          }
+          prefs[pos.k] = newValue;
+        }
         setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, prefs } : x));
       },
       onToggleForbidden: () => {
@@ -2063,7 +2097,8 @@ export default function App() {
       setPlayers(ps => ps.filter(x => x.id !== p.id));
       setMatch(mm => ({ ...mm, selected: (mm.selected || []).filter(x => x !== p.id) }));
     }
-  }));
+  };
+  });
 
   const scRows = group => (sc[group] || []).map(row => ({
     key: row.id,
@@ -4194,7 +4229,7 @@ export default function App() {
                 naamkolom trekt. width:auto hier overschrijft dat zodat de tabel weer op zijn
                 inhoud past, met min-width alleen als ondergrens. */}
             <table className="table" style={css('min-width:' + (isMyTeam ? '1080px' : '540px') + (isMyTeam ? '' : ';width:auto'))}>
-              <thead>
+              <thead className="table-sticky-head">
                 <tr>
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
@@ -4226,7 +4261,14 @@ export default function App() {
                       <td key={c.key} style={{ textAlign: 'center' }}>
                         {readOnly ? (c.forbidden ? '🚫' : (c.value || '—')) : (
                           <div style={css('display:flex;flex-direction:column;align-items:center;gap:2px')}>
-                            <input className="input" type="number" min="1" max="9" disabled={c.forbidden} aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px' + (c.forbidden ? ';opacity:0.35' : ''))} value={c.forbidden ? '' : c.value} onChange={c.onChange} />
+                            {c.forbidden ? (
+                              <div aria-hidden="true" style={css('width:46px;padding:4px;text-align:center;border-radius:var(--radius-md);border:1px solid var(--color-divider);background:var(--color-neutral-200);color:var(--color-accent-2-700);font-weight:700')}>✕</div>
+                            ) : (
+                              <select className="input" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange}>
+                                <option value=""></option>
+                                {Array.from({ length: c.maxOption }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                              </select>
+                            )}
                             <button type="button" className="btn btn-ghost" onClick={c.onToggleForbidden}
                               aria-label={`${PMAP[c.key].label} verbieden voor ${r.name}`}
                               aria-pressed={c.forbidden}
@@ -4445,8 +4487,8 @@ export default function App() {
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Push meldingen</h2>
             <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
               Zet meldingen aan om bij elk doelpunt tijdens een live wedstrijd automatisch een pushmelding te krijgen -
-              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot het geluid/de
-              banner die alleen werken zolang de pagina open en actief is.
+              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot de banner in de
+              app, die alleen te zien is zolang de pagina open en actief is.
             </p>
           </div>
 
@@ -4903,7 +4945,7 @@ export default function App() {
         </main>
       )}
 
-      {tab === 'wijzigingen' && isAdmin && (
+      {tab === 'wijzigingen' && (isMyTeam || myRoleForCurrentTeam === 'manager') && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
           <div>
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Wijzigingen</h2>
