@@ -9,6 +9,8 @@ import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 import { subscribeToPush, unsubscribeFromPush } from './push.js';
+import { CHANGELOG } from './changelog.js';
+import { cardFor } from './playerCards.js';
 
 function css(str) {
   const obj = {};
@@ -162,6 +164,81 @@ const ICON_SWAP_VERT = 'M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 
 // voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
 // blijven.
 function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
+// Verboden, voorkeurscijfer, of "geen voorkeur ingevuld" voor een speler op een positie -
+// gedeeld door het wedstrijdschema (naast een naam) én de wissel-/verplaatsdialogen (in de
+// "fit"-tekst), zodat beide exact dezelfde badge tonen. maxN is de hóógste voorkeurswaarde die
+// déze speler zelf ooit heeft ingevuld (bv. 5 als ze posities 1 t/m 5 heeft gerangschikt) - de
+// kleurschaal in prefColor loopt per speler van groen (1, haar beste positie) naar oranje (maxN,
+// haar minst geprefereerde ingevulde positie), niet op een vast bereik.
+function prefMark(p, pos) {
+  if (!p) return null;
+  if (p.avoid && p.avoid[pos]) return { kind: 'forbidden' };
+  const n = p.prefs[pos];
+  if (!n) return { kind: 'none' };
+  const filled = Object.values(p.prefs).filter(Boolean);
+  return { kind: 'pref', n, maxN: filled.length ? Math.max(...filled) : n };
+}
+// Lineaire interpolatie tussen groen (rang 1) en oranje (rang maxN) - bewust hardcoded (net als
+// ATTENDANCE_COLOR verderop) i.p.v. een design-token, want dit is een driekleurenschaal
+// (groen/oranje/rood) die verder los staat van het huisstijlpalet.
+function prefColor(n, maxN) {
+  const t = maxN > 1 ? (n - 1) / (maxN - 1) : 0;
+  const from = [47, 158, 79], to = [217, 130, 43];
+  return `rgb(${from.map((c, i) => Math.round(c + (to[i] - c) * t)).join(',')})`;
+}
+function markBadge(mark) {
+  if (!mark) return null;
+  const badgeStyle = 'display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 auto;border-radius:50%;color:#fff;font-size:10px;font-weight:700;line-height:1;margin-left:4px;vertical-align:middle;';
+  if (mark.kind === 'forbidden') return <span aria-label="verboden op deze positie" style={css('margin-left:4px')}>🚫</span>;
+  if (mark.kind === 'none') {
+    return <span aria-label="geen voorkeur ingevuld" style={css(badgeStyle + 'background:#d9363e')}>?</span>;
+  }
+  return (
+    <span aria-label={`voorkeur ${mark.n} op deze plek`} style={css(badgeStyle + 'background:' + prefColor(mark.n, mark.maxN))}>
+      {mark.n}
+    </span>
+  );
+}
+
+// Microfoonknopje naast een tekstveld dat spraak-naar-tekst aanbiedt (Web Speech API, zoals
+// Windows-toets+H) - alleen zichtbaar als de browser dit ondersteunt (o.a. niet in Firefox).
+// Herkende tekst wordt achter de bestaande inhoud van het veld geplakt; de coach kan de tekst
+// daarna nog gewoon met de hand aanpassen, spraakherkenning is nooit het laatste woord.
+function DictateButton({ setText, disabled }) {
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+  const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+  if (!Recognition) return null;
+
+  function toggle() {
+    if (listening) { recognitionRef.current?.stop(); return; }
+    const recognition = new Recognition();
+    recognition.lang = 'nl-NL';
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = e => {
+      let addition = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) addition += e.results[i][0].transcript;
+      }
+      addition = addition.trim();
+      if (addition) setText(t => (t && t.trim() ? t.trim() + ' ' : '') + addition);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  return (
+    <button type="button" disabled={disabled} className={listening ? 'btn btn-primary' : 'btn btn-secondary'}
+      style={css('padding:3px 10px;font-size:12px;align-self:flex-end')} onClick={toggle}>
+      {listening ? '⏺ Luistert… (klik om te stoppen)' : '🎤 Inspreken'}
+    </button>
+  );
+}
 
 // Klein rond knopje op een schemacel om een notitie toe te voegen - toont een stipje/aantal
 // zodra er al aantekeningen voor die speler in dat kwart bestaan (rood als er een werkpunt
@@ -446,6 +523,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, veld: '' });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [cardModal, setCardModal] = useState(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const desktopMoreMenuRef = useRef(null);
   const mobileMoreMenuRef = useRef(null);
@@ -531,6 +609,33 @@ export default function App() {
       document.documentElement.requestFullscreen().catch(() => {});
     }
   }
+  // "Scherm actief houden" tijdens wedstrijdmodus - voorkomt dat het toestel na een tijdje
+  // inactiviteit vergrendelt/in slaapstand gaat (waarna opnieuw inloggen nodig is). De browser
+  // trekt de wake lock zelf automatisch in zodra het tabblad naar de achtergrond gaat (andere
+  // app/tabblad, scherm vergrendeld) - de visibilitychange-listener hieronder vraagt 'm bij
+  // terugkeer opnieuw aan zolang wakeLockOn nog aanstaat, anders zou een korte tabwissel de
+  // bescherming stilletjes uitzetten zonder dat de knop dat laat zien. Wordt automatisch
+  // uitgezet door endMatch (zie daar) - handmatig aan/uit blijft via de knop in wedstrijdmodus.
+  const [wakeLockOn, setWakeLockOn] = useState(false);
+  const wakeLockRef = useRef(null);
+  useEffect(() => {
+    if (!wakeLockOn || !('wakeLock' in navigator)) return;
+    let cancelled = false;
+    const acquire = () => {
+      navigator.wakeLock.request('screen').then(sentinel => {
+        if (cancelled) { sentinel.release().catch(() => {}); return; }
+        wakeLockRef.current = sentinel;
+      }).catch(() => { /* geweigerd (bv. batterijbesparing) - knop blijft gewoon aan te klikken */ });
+    };
+    acquire();
+    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
+    };
+  }, [wakeLockOn]);
   // Puur lokale tik voor het live aftellen (elke kijker rekent zelf door op basis van het
   // gesynchroniseerde endAt-tijdstip in m.clocks - zie hieronder) - wordt nooit weggeschreven.
   const [timerNow, setTimerNow] = useState(() => Date.now());
@@ -590,6 +695,32 @@ export default function App() {
   const [endMatchConfirm, setEndMatchConfirm] = useState(false);
   const [manualClockInput, setManualClockInput] = useState('');
   const [expandedReportId, setExpandedReportId] = useState(null);
+  // Diep-linken vanuit een pushmelding (?team=&tab=&report=, zie de notificationclick-handler in
+  // firebase-messaging-sw.js): naar Live als de wedstrijd nog bezig was toen de melding werd
+  // verstuurd, anders naar het bijbehorende wedstrijdverslag (indien al opgeslagen), anders naar
+  // de algemene Wedstrijdverslagen-pagina. ?team= is nodig omdat iemand niet-ingelogd meerdere
+  // teams kan volgen - zonder team-param zou zo iemand op het standaardteam terechtkomen i.p.v.
+  // het team waar de melding daadwerkelijk over ging. Wacht bij een team-param op teamsLoaded
+  // (om 'm te kunnen valideren) voordat er iets wordt toegepast; zonder team-param gebeurt dat
+  // meteen. Ververst maar één keer, anders zou een latere handmatige tabwissel steeds worden
+  // teruggezet zolang de query-string nog in de adresbalk staat.
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const wantTeam = params.get('team');
+    const wantTab = params.get('tab');
+    const wantReport = params.get('report');
+    if (!wantTeam && !wantTab && !wantReport) { deepLinkAppliedRef.current = true; return; }
+    if (wantTeam) {
+      if (!teamsLoaded) return;
+      if (teams.some(t => t.id === wantTeam)) setCurrentTeamId(wantTeam);
+    }
+    if (wantTab) setTab(wantTab);
+    if (wantReport) setExpandedReportId(wantReport);
+    deepLinkAppliedRef.current = true;
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [teamsLoaded, teams]);
   // Index (in m.goalLog) van de logregel die de coach nu aan het bewerken is, plus het
   // bijbehorende bewerkformulier - null = geen bewerkdialoog open.
   const [editEntryIdx, setEditEntryIdx] = useState(null);
@@ -1597,6 +1728,9 @@ export default function App() {
     // hier al kant-en-klaar door de filter hieronder.
     ...(m.liveOpened ? [['live', 'Live']] : []),
     ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
+    // Wijzigingen: voor admin én coaches/managers van dit team - niet voor een uitgelogde
+    // bezoeker of iemand zonder rol bij dit team.
+    ...((isMyTeam || myRoleForCurrentTeam === 'manager') ? [['wijzigingen', 'Wijzigingen']] : []),
   ].filter(t => t[0] === 'teams' ? !!user : ((user && !limitedNav) || !LOGGED_IN_ONLY_TABS.includes(t[0]))).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
@@ -1748,6 +1882,12 @@ export default function App() {
     Object.keys(a.on).forEach(k => { posOfA[a.on[k]] = k; });
     Object.keys(b.on).forEach(k => { posOfB[b.on[k]] = k; });
     const movers = Object.keys(a.on).filter(k => a.on[k] && posOfB[a.on[k]] && posOfB[a.on[k]] !== k).map(k => a.on[k]);
+    // Toont bij elke naam in het schema een rond badge-icoontje met haar positievoorkeur voor
+    // die plek (bv. de 1 van "beste positie" bij Team), of 🚫 als deze positie voor haar verboden
+    // is - zo valt een pijnpunt (zie painPoints hieronder) ook meteen op in het schema zelf, niet
+    // alleen in de tekst eronder. Zie prefMark/markBadge (module-scope) - dezelfde badge wordt
+    // ook in de wissel-/verplaatsdialogen gebruikt.
+    const posMark = (pid, k) => prefMark(pid && byId(pid), k);
     const rows = LINES.map((line, li) => ({
       key: li,
       cells: line.map(k => {
@@ -1774,6 +1914,8 @@ export default function App() {
           pos: PMAP[k].label,
           nameA: (pa ? nameOf(pa) + supNum(subA) : '—') + (goesOff ? ' ◂' : moves ? ' ⇄' : ''),
           nameB: swap ? (pb ? nameOf(pb) + supNum(subB) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
+          markA: posMark(pa, k),
+          markB: swap ? posMark(pb, k) : null,
           onEdit: readOnly ? undefined : () => { setEditing({ q, half: 0, pos: k }); setRelocating(null); },
           onEditB: readOnly ? undefined : () => { setEditing({ q, half: 1, pos: k }); setRelocating(null); },
           onNote: (readOnly || !pa) ? undefined : () => openNoteEditor(pa, q, 0),
@@ -1804,11 +1946,34 @@ export default function App() {
       }]
     }]);
     const injuredNow = Object.keys(m.injuries || {}).filter(id => m.injuries[id] <= 2 * q + 1).map(id => nameOf(id));
+    // Pijnpunten: waar het algoritme (bv. door weinig invallers) een speelster toch op een
+    // positie heeft moeten zetten waar ze geen voorkeur voor heeft, of - erger - die voor haar
+    // expliciet verboden is. Eén melding per unieke speelster+positie in dit kwart (1e en 2e
+    // helft samengevoegd), zodat "gaat eruit -> komt terug op dezelfde plek" niet dubbel telt.
+    const painSeen = new Set();
+    const painPoints = [];
+    [a.on, b.on].forEach(onMap => {
+      Object.keys(onMap).forEach(k => {
+        const pid = onMap[k];
+        if (!pid) return;
+        const dedupeKey = k + '|' + pid;
+        if (painSeen.has(dedupeKey)) return;
+        painSeen.add(dedupeKey);
+        const player = byId(pid);
+        if (!player) return;
+        if (player.avoid && player.avoid[k]) {
+          painPoints.push(displayFirst(player) + ' op ' + PMAP[k].label + ' — dit is voor haar verboden');
+        } else if (!player.prefs[k]) {
+          painPoints.push(displayFirst(player) + ' op ' + PMAP[k].label + ' — geen voorkeur ingevuld');
+        }
+      });
+    });
     return {
       key: q,
       title: (q + 1) + 'e kwart',
       time: fmt(q * QUARTER_MIN) + ' – ' + fmt((q + 1) * QUARTER_MIN),
       rows,
+      painPoints,
       notes: [
         {
           key: 'start',
@@ -1889,9 +2054,12 @@ export default function App() {
   }));
 
   const fitOf = (p, pos) => {
-    if (!p) return 'speelt hier normaal niet';
-    if (p.avoid && p.avoid[pos]) return 'verboden op deze positie';
-    return p.prefs[pos] ? 'voorkeur ' + p.prefs[pos] + ' op deze plek' : 'speelt hier normaal niet';
+    const mark = prefMark(p, pos);
+    const label = !mark ? 'speelt hier normaal niet'
+      : mark.kind === 'forbidden' ? 'verboden op deze positie'
+      : mark.kind === 'none' ? 'geen voorkeur ingevuld'
+      : 'voorkeur ' + mark.n + ' op deze plek';
+    return <>{label}{markBadge(mark)}</>;
   };
   let editor = null;
   if (sched && editing && sched[2 * editing.q + editing.half]) {
@@ -1906,7 +2074,7 @@ export default function App() {
     cands.sort((a, b2) => rank(a) - rank(b2) || (ratingOf(byId(b2.id)) - ratingOf(byId(a.id))));
     editor = {
       title: (ed.q + 1) + 'e kwart · ' + PMAP[ed.pos].label,
-      current: curId ? nameOf(curId) + ' — ' + fitOf(byId(curId), ed.pos) : 'leeg',
+      current: curId ? <>{nameOf(curId)} — {fitOf(byId(curId), ed.pos)}</> : 'leeg',
       halfTabs: [0, 1].map(h => ({
         key: h, label: h === 0 ? '1e helft' : '2e helft (na 8:00)',
         go: () => setEditing({ q: ed.q, half: h, pos: ed.pos }),
@@ -1926,7 +2094,7 @@ export default function App() {
         }
         return {
           key: ci, name: displayFirst(p),
-          meta: (c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank') + ' · ' + fitOf(p, ed.pos),
+          meta: <>{c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank'} · {fitOf(p, ed.pos)}</>,
           effect,
           style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
           apply: () => applySwap(b, ed.pos, c.id)
@@ -2016,9 +2184,17 @@ export default function App() {
 
   const posCols = POS.map(p => ({ key: p.k, short: p.short, count: players.filter(pl => pl.prefs[p.k]).length }));
   const kpCount = players.filter(pl => pl.fixedKeeper).length;
-  const teamRows = players.map(p => ({
+  const teamRows = players.map(p => {
+  // Voorkeurscijfers moeten oplopend zonder gaten zijn - staan er al 1, 2 en 3, dan is 4 de
+  // eerstvolgende die nog gekozen mag worden (5/6 pas als 4 ook bezet is). maxOption is dus de
+  // hoogste al gebruikte waarde + 1 (met 6 als plafond); een cel biedt altijd de al gebruikte
+  // waarden aan (die schuiven de rest op, zie onChange hieronder) plus precies één nieuwe.
+  const usedPrefs = Object.values(p.prefs);
+  const maxOption = Math.min(6, (usedPrefs.length ? Math.max(...usedPrefs) : 0) + 1);
+  return {
     key: p.id,
     name: p.first + ' ' + p.last,
+    card: cardFor(p.first),
     posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
@@ -2032,11 +2208,35 @@ export default function App() {
       key: pos.k,
       value: p.prefs[pos.k] ? String(p.prefs[pos.k]) : '',
       forbidden: !!(p.avoid && p.avoid[pos.k]),
+      maxOption,
+      // Voorkeurscijfers moeten per speelster altijd een oplopende reeks zonder gaten vormen (zie
+      // maxOption hierboven) - een wijziging schuift daarom de andere posities op, net als het
+      // verplaatsen van een item in een gerangschikte lijst: van 5 naar 1 (bij 1 t/m 5 gevuld)
+      // schuift 1-4 een plek op naar 2-5; van 1 naar 4 schuift 2-4 een plek terug naar 1-3; leeg
+      // maken schuift alles ná de oude waarde een plek naar voren (sluit het gat); een nieuwe
+      // waarde invullen (was leeg) schuift alles vanaf die waarde een plek naar achteren.
       onChange: e => {
         if (readOnly) return;
         const raw = e.target.value;
+        const oldValue = p.prefs[pos.k];
+        const newValue = raw === '' ? null : Number(raw);
         const prefs = { ...p.prefs };
-        if (raw === '' || Number(raw) <= 0) delete prefs[pos.k]; else prefs[pos.k] = Number(raw);
+        if (newValue == null) {
+          if (oldValue != null) {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] > oldValue) prefs[k] -= 1; });
+          }
+          delete prefs[pos.k];
+        } else if (oldValue == null) {
+          Object.keys(prefs).forEach(k => { if (prefs[k] >= newValue) prefs[k] += 1; });
+          prefs[pos.k] = newValue;
+        } else if (newValue !== oldValue) {
+          if (newValue < oldValue) {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] >= newValue && prefs[k] < oldValue) prefs[k] += 1; });
+          } else {
+            Object.keys(prefs).forEach(k => { if (k !== pos.k && prefs[k] > oldValue && prefs[k] <= newValue) prefs[k] -= 1; });
+          }
+          prefs[pos.k] = newValue;
+        }
         setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, prefs } : x));
       },
       onToggleForbidden: () => {
@@ -2062,7 +2262,8 @@ export default function App() {
       setPlayers(ps => ps.filter(x => x.id !== p.id));
       setMatch(mm => ({ ...mm, selected: (mm.selected || []).filter(x => x !== p.id) }));
     }
-  }));
+  };
+  });
 
   const scRows = group => (sc[group] || []).map(row => ({
     key: row.id,
@@ -2752,8 +2953,8 @@ export default function App() {
                       style={css(noteDotStyle(cell.noteBadge))}>{cell.noteBadge ? cell.noteBadge.count : '+'}</button>
                   )}
                 </div>
-                <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
-                <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
+                <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}{markBadge(cell.markA)}</div>
+                <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}{markBadge(cell.markB)}</div>
                 {cell.onSwapHalves && (
                   <button type="button" data-noprint="1" aria-label={`${cell.pos} — 1e en 2e helft wisselen`} title="1e en 2e helft wisselen (schuift een van beiden ergens anders door, dan verandert die andere positie ook mee)"
                     onClick={e => { e.stopPropagation(); cell.onSwapHalves(); }}
@@ -2963,12 +3164,50 @@ export default function App() {
   // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
   // afgelopen wedstrijd, via de wedstrijd zelf) dezelfde regel tonen — daarom home/opponentName
   // als losse parameters i.p.v. rechtstreeks scoreFxObj/m te gebruiken.
+  // Spelerskaartjes (zie playerCards.js) bij een logregel: bij een eigen doelpunt de schutter (en
+  // assist) via hun speler-id (exact, geen giswerk); bij vrije tekst (Extra live commentaar) door
+  // te zoeken naar een herkende voornaam in de tekst - alleen spelers mét kaartje leveren een
+  // plaatje op, een niet-herkende of kaartloze naam levert gewoon niets extra's op.
+  function cardsForNote(text) {
+    if (!text) return [];
+    const found = [];
+    const seen = new Set();
+    players.forEach(p => {
+      if (seen.has(p.id) || !p.first) return;
+      const card = cardFor(p.first);
+      if (!card) return;
+      const re = new RegExp('\\b' + p.first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      if (re.test(text)) { found.push({ id: p.id, name: p.first, card }); seen.add(p.id); }
+    });
+    return found;
+  }
+  function logEntryCards(g) {
+    if (g.team === 'note') return cardsForNote(g.text);
+    if (g.team !== 'us') return [];
+    const cards = [];
+    const scorer = g.scorerId && byId(g.scorerId);
+    if (scorer) { const card = cardFor(scorer.first); if (card) cards.push({ id: scorer.id, name: scorer.first, card }); }
+    const assist = g.assistId && byId(g.assistId);
+    if (assist) { const card = cardFor(assist.first); if (card) cards.push({ id: assist.id, name: assist.first, card }); }
+    return cards;
+  }
   function formatMatchLogEntry(g, home, opponentName) {
-    if (g.team === 'note') return g.minute + 'e minuut: ' + g.text;
+    const cards = logEntryCards(g);
+    const cardRow = cards.length > 0 && (
+      <span style={css('display:inline-flex;gap:4px;vertical-align:middle;margin-left:8px')}>
+        {cards.map(c => (
+          <button key={c.id} type="button" onClick={() => setCardModal(c.card)} title={`Spelerskaart van ${c.name}`}
+            style={css('border:none;padding:0;cursor:pointer;background:none;line-height:0;vertical-align:middle')}>
+            <img src={c.card} alt="" style={css('height:26px;width:auto;border-radius:4px;object-fit:cover;vertical-align:middle')} />
+          </button>
+        ))}
+      </span>
+    );
+    if (g.team === 'note') return <>{g.minute}e minuut: {g.text}{cardRow}</>;
     const first = home ? g.atUs : g.atThem;
     const second = home ? g.atThem : g.atUs;
     if (g.team === 'us') {
-      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + (g.assistName ? ' (assist: ' + g.assistName + ')' : '') + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
+      return <>{g.minute}e minuut: {g.scorerName || ownTeamName}{g.assistName ? ' (assist: ' + g.assistName + ')' : ''} scoort voor {ownTeamName} — {first}–{second}{g.remark ? '. ' + g.remark : ''}{cardRow}</>;
     }
     return g.minute + 'e minuut: ' + opponentName + ' scoort — ' + first + '–' + second;
   }
@@ -2983,6 +3222,7 @@ export default function App() {
     patchMatch(team === 'us' ? { liveUs: Math.max(0, (m.liveUs || 0) - 1) } : { liveThem: Math.max(0, (m.liveThem || 0) - 1) });
   }
   function endMatch() {
+    setWakeLockOn(false);
     patchMatch({ liveEnded: true });
     if (scoreFxObj) {
       // Het wedstrijdverslag wordt op de wedstrijd zelf bewaard (niet op het tijdelijke
@@ -3108,6 +3348,7 @@ export default function App() {
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
                   <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('min-height:50px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
+                  <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setGoalRemark} /></div>
                   {!scorerOptions.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Geen speelsters geselecteerd voor deze wedstrijd.</p>}
                   {/* Twee kolommen naast elkaar: links de schutter kiezen, rechts (optioneel) de
                       assist. Zodra iemand als schutter is gekozen verdwijnt haar naam uit de
@@ -3187,7 +3428,10 @@ export default function App() {
                     </>
                   )}
                   {(m.goalLog[editEntryIdx].team === 'note' || m.goalLog[editEntryIdx].team === 'us') && (
-                    <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
+                    <>
+                      <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
+                      <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setEditText} /></div>
+                    </>
                   )}
                 </div>
                 <div className="dialog-actions" style={css('justify-content:space-between')}>
@@ -3236,6 +3480,11 @@ export default function App() {
             {m.liveMatchStarted && !m.liveEnded && (
               <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); setCommentDialog(true); }}>Extra live commentaar</button>
             )}
+            {'wakeLock' in navigator && (
+              <button type="button" className={wakeLockOn ? 'btn btn-primary' : 'btn btn-secondary'} style={css('flex:1;min-width:140px')}
+                title="Voorkomt dat dit toestel tijdens de wedstrijd vergrendelt/in slaapstand gaat"
+                onClick={() => setWakeLockOn(v => !v)}>{wakeLockOn ? '🔆 Scherm blijft aan' : '🔆 Scherm actief houden'}</button>
+            )}
             {m.liveMatchStarted && !m.liveEnded && (
               <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => setEndMatchConfirm(true)}>Wedstrijd beëindigen</button>
             )}
@@ -3251,6 +3500,7 @@ export default function App() {
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
                   <textarea className="input" placeholder="Bv. Speelster van Alphen krijgt rood" style={css('width:100%;min-height:80px;resize:vertical;font-family:inherit')} value={commentText} onChange={e => setCommentText(e.target.value)} autoFocus />
+                  <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setCommentText} /></div>
                 </div>
                 <div className="dialog-actions">
                   <button type="button" className="btn btn-ghost" onClick={() => { setCommentDialog(false); setCommentText(''); }}>Annuleren</button>
@@ -3754,7 +4004,19 @@ export default function App() {
                   <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{matchDateTimeLine}</span>
                 </div>
                 <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-6)')}>
-                {g.items.map(halfCard)}
+                {g.items.map(h => (
+                  <div key={h.key} style={css('display:flex;flex-direction:column;gap:6px')}>
+                    {halfCard(h)}
+                    {/* Pijnpunten: alleen in de indelingsmodus (hier), niet in de compacte
+                        wedstrijdmodus-kaart - die hergebruikt dezelfde halfCard, vandaar dat dit
+                        losstaand ernaast staat i.p.v. in halfCard zelf. */}
+                    {h.painPoints.length > 0 && (
+                      <div data-noprint="1" style={css('padding:8px 10px;border-radius:var(--radius-md);background:var(--color-accent-2-100);color:var(--color-accent-2-800);font-size:13px;line-height:1.4')}>
+                        <strong>Pijnpunten:</strong> {h.painPoints.join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
                 </div>
               </div>
               ))}
@@ -4183,7 +4445,14 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
           {isMyTeam && <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt. Met 🚫 geef je aan dat ze op die positie nooit ingedeeld mag worden.</p>}
-          <div style={{ overflowX: 'auto' }}>
+          {/* maxHeight+overflowY hier is nodig omdat overflowX:auto anders stiekem ook
+              overflowY op auto zet (CSS-regel: als de ene as niet visible is, wordt de andere
+              dat ook) - zonder een eigen, daadwerkelijk scrollende hoogte wordt dít element dan
+              de "scroll-ouder" waar de sticky kolomkop (.table-sticky-head, top:0) zich aan
+              probeert vast te zetten, terwijl in werkelijkheid de hele pagina scrolt: de kop
+              plakt dan nergens aan vast en verdwijnt gewoon bij het naar beneden scrollen. Met
+              een eigen scrollende hoogte hier (i.p.v. de pagina) klopt de sticky-referentie weer. */}
+          <div style={css('overflow-x:auto;overflow-y:auto;max-height:70vh')}>
             {/* De brede min-width is alleen nodig zodra de positievoorkeur-kolommen (en Niveau)
                 erbij staan - voor een niet-coach/admin-viewer, die alleen Speelster/Type/KP/DP
                 ziet, zou dat een tabel vol lege ruimte opleveren. */}
@@ -4193,7 +4462,7 @@ export default function App() {
                 naamkolom trekt. width:auto hier overschrijft dat zodat de tabel weer op zijn
                 inhoud past, met min-width alleen als ondergrens. */}
             <table className="table" style={css('min-width:' + (isMyTeam ? '1080px' : '540px') + (isMyTeam ? '' : ';width:auto'))}>
-              <thead>
+              <thead className="table-sticky-head">
                 <tr>
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
@@ -4212,7 +4481,17 @@ export default function App() {
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap', padding: r.card ? 0 : undefined }}>
+                      <div style={css('display:flex;align-items:center;height:100%')}>
+                        {r.card && (
+                          <button type="button" onClick={() => setCardModal(r.card)} title={`Spelerskaart van ${r.name}`}
+                            style={css('border:none;padding:0;cursor:pointer;flex:0 0 auto;background:var(--color-bg);line-height:0')}>
+                            <img src={r.card} alt="" style={css('height:64px;width:auto;display:block;object-fit:cover')} />
+                          </button>
+                        )}
+                        <span style={css('display:flex;align-items:center;' + (r.card ? 'padding:var(--space-2)' : ''))}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</span>
+                      </div>
+                    </td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     {isMyTeam && (
                       <td style={{ textAlign: 'center' }}>
@@ -4225,7 +4504,14 @@ export default function App() {
                       <td key={c.key} style={{ textAlign: 'center' }}>
                         {readOnly ? (c.forbidden ? '🚫' : (c.value || '—')) : (
                           <div style={css('display:flex;flex-direction:column;align-items:center;gap:2px')}>
-                            <input className="input" type="number" min="1" max="9" disabled={c.forbidden} aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px' + (c.forbidden ? ';opacity:0.35' : ''))} value={c.forbidden ? '' : c.value} onChange={c.onChange} />
+                            {c.forbidden ? (
+                              <div aria-hidden="true" style={css('width:46px;padding:4px;text-align:center;border-radius:var(--radius-md);border:1px solid var(--color-divider);background:var(--color-neutral-200);color:var(--color-accent-2-700);font-weight:700')}>✕</div>
+                            ) : (
+                              <select className="input" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange}>
+                                <option value=""></option>
+                                {Array.from({ length: c.maxOption }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                              </select>
+                            )}
                             <button type="button" className="btn btn-ghost" onClick={c.onToggleForbidden}
                               aria-label={`${PMAP[c.key].label} verbieden voor ${r.name}`}
                               aria-pressed={c.forbidden}
@@ -4266,6 +4552,12 @@ export default function App() {
             </div>
           )}
         </main>
+      )}
+
+      {cardModal && (
+        <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setCardModal(null)}>
+          <img src={cardModal} alt="Spelerskaart" style={css('max-width:min(90vw,420px);max-height:85vh;border-radius:var(--radius-lg);box-shadow:0 10px 40px rgba(0,0,0,0.4)')} onClick={e => e.stopPropagation()} />
+        </div>
       )}
 
       {tab === 'verslagen' && (
@@ -4444,8 +4736,8 @@ export default function App() {
             <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Push meldingen</h2>
             <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
               Zet meldingen aan om bij elk doelpunt tijdens een live wedstrijd automatisch een pushmelding te krijgen -
-              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot het geluid/de
-              banner die alleen werken zolang de pagina open en actief is.
+              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot de banner in de
+              app, die alleen te zien is zolang de pagina open en actief is.
             </p>
           </div>
 
@@ -4899,6 +5191,23 @@ export default function App() {
             })}
             {!allUsers.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen gebruikers.</p>}
           </div>
+        </main>
+      )}
+
+      {tab === 'wijzigingen' && (isMyTeam || myRoleForCurrentTeam === 'manager') && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Wijzigingen</h2>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per versie wat er is toegevoegd of veranderd aan de app. Huidige versie: v{__APP_VERSION__}.</p>
+          </div>
+          {CHANGELOG.map(entry => (
+            <div key={entry.version} className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+              <div className="card-title">v{entry.version} · {entry.date}</div>
+              <ul style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.6')}>
+                {entry.changes.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          ))}
         </main>
       )}
 
