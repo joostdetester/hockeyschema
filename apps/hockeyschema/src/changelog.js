@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.5.0',
+    date: '2026-09-12',
+    changes: [
+      'Team: eerste leuke "spelerskaartjes" toegevoegd - een rond fotootje naast de naam (waar aanwezig) waar je op kan klikken voor de volledige kaart. Puur voor de lol, geen echte spelerdata.',
+    ],
+  },
+  {
     version: '1.4.0',
     date: '2026-09-12',
     changes: [

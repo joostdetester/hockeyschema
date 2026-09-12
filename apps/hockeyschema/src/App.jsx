@@ -10,6 +10,7 @@ import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 import { subscribeToPush, unsubscribeFromPush } from './push.js';
 import { CHANGELOG } from './changelog.js';
+import { cardFor } from './playerCards.js';
 
 function css(str) {
   const obj = {};
@@ -522,6 +523,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, veld: '' });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [cardModal, setCardModal] = useState(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const desktopMoreMenuRef = useRef(null);
   const mobileMoreMenuRef = useRef(null);
@@ -2166,6 +2168,7 @@ export default function App() {
   return {
     key: p.id,
     name: p.first + ' ' + p.last,
+    card: cardFor(p.first),
     posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
@@ -4407,7 +4410,15 @@ export default function App() {
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
+                      {r.card && (
+                        <button type="button" onClick={() => setCardModal(r.card)} title={`Spelerskaart van ${r.name}`}
+                          style={css('width:22px;height:22px;border-radius:50%;border:1px solid var(--color-divider);padding:0;margin-right:6px;overflow:hidden;cursor:pointer;vertical-align:middle;background:var(--color-bg)')}>
+                          <img src={r.card} alt="" style={css('width:100%;height:100%;object-fit:cover')} />
+                        </button>
+                      )}
+                      {r.name}{isMyTeam ? ` (${r.posCount})` : ''}
+                    </td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     {isMyTeam && (
                       <td style={{ textAlign: 'center' }}>
@@ -4468,6 +4479,12 @@ export default function App() {
             </div>
           )}
         </main>
+      )}
+
+      {cardModal && (
+        <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setCardModal(null)}>
+          <img src={cardModal} alt="Spelerskaart" style={css('max-width:min(90vw,420px);max-height:85vh;border-radius:var(--radius-lg);box-shadow:0 10px 40px rgba(0,0,0,0.4)')} onClick={e => e.stopPropagation()} />
+        </div>
       )}
 
       {tab === 'verslagen' && (
