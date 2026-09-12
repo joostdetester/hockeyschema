@@ -4,6 +4,14 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.6.0',
+    date: '2026-09-12',
+    changes: [
+      'Team: het spelerskaartje naast de naam is nu een rechthoekige foto op volledige rijhoogte i.p.v. een rond icoontje.',
+      'Bugfix: bij Team bleef de kolomkop bij het naar beneden scrollen tot nu toe niet altijd goed vastgeplakt (verdween soms helemaal) - de tabel scrollt nu in zijn eigen vak met een kop die daadwerkelijk blijft plakken.',
+    ],
+  },
+  {
     version: '1.5.0',
     date: '2026-09-12',
     changes: [

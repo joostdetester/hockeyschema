@@ -4381,7 +4381,14 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
           {isMyTeam && <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt. Met 🚫 geef je aan dat ze op die positie nooit ingedeeld mag worden.</p>}
-          <div style={{ overflowX: 'auto' }}>
+          {/* maxHeight+overflowY hier is nodig omdat overflowX:auto anders stiekem ook
+              overflowY op auto zet (CSS-regel: als de ene as niet visible is, wordt de andere
+              dat ook) - zonder een eigen, daadwerkelijk scrollende hoogte wordt dít element dan
+              de "scroll-ouder" waar de sticky kolomkop (.table-sticky-head, top:0) zich aan
+              probeert vast te zetten, terwijl in werkelijkheid de hele pagina scrolt: de kop
+              plakt dan nergens aan vast en verdwijnt gewoon bij het naar beneden scrollen. Met
+              een eigen scrollende hoogte hier (i.p.v. de pagina) klopt de sticky-referentie weer. */}
+          <div style={css('overflow-x:auto;overflow-y:auto;max-height:70vh')}>
             {/* De brede min-width is alleen nodig zodra de positievoorkeur-kolommen (en Niveau)
                 erbij staan - voor een niet-coach/admin-viewer, die alleen Speelster/Type/KP/DP
                 ziet, zou dat een tabel vol lege ruimte opleveren. */}
@@ -4410,14 +4417,16 @@ export default function App() {
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
-                      {r.card && (
-                        <button type="button" onClick={() => setCardModal(r.card)} title={`Spelerskaart van ${r.name}`}
-                          style={css('width:22px;height:22px;border-radius:50%;border:1px solid var(--color-divider);padding:0;margin-right:6px;overflow:hidden;cursor:pointer;vertical-align:middle;background:var(--color-bg)')}>
-                          <img src={r.card} alt="" style={css('width:100%;height:100%;object-fit:cover')} />
-                        </button>
-                      )}
-                      {r.name}{isMyTeam ? ` (${r.posCount})` : ''}
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap', padding: r.card ? 0 : undefined }}>
+                      <div style={css('display:flex;align-items:center;height:100%')}>
+                        {r.card && (
+                          <button type="button" onClick={() => setCardModal(r.card)} title={`Spelerskaart van ${r.name}`}
+                            style={css('border:none;padding:0;cursor:pointer;flex:0 0 auto;background:var(--color-bg);line-height:0')}>
+                            <img src={r.card} alt="" style={css('height:64px;width:auto;display:block;object-fit:cover')} />
+                          </button>
+                        )}
+                        <span style={css('display:flex;align-items:center;' + (r.card ? 'padding:var(--space-2)' : ''))}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</span>
+                      </div>
                     </td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     {isMyTeam && (
