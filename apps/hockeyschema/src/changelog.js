@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.4.0',
+    date: '2026-09-12',
+    changes: [
+      'Bugfix: na een nieuwe versie kon de app door browsercaching nog tot een uur het oude versienummer/de oude versie tonen - de hoofdpagina wordt nu nooit meer gecachet, dus elke nieuwe versie is direct zichtbaar na een ververs.',
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-09-12',
     changes: [
