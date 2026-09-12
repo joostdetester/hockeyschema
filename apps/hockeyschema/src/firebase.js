@@ -3,7 +3,10 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions } from 'firebase/functions';
 
-const firebaseConfig = {
+// Ook gebruikt door push.js om dezelfde config als query string mee te geven bij het
+// registreren van de messaging service worker (die kan als los, statisch bestand onder public/
+// niet zelf bij import.meta.env - zie firebase-messaging-sw.js).
+export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,

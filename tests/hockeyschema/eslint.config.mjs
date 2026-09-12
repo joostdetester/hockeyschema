@@ -4,7 +4,11 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    ignores: ['.features-gen/**', 'node_modules/**', 'allure-report/**', 'playwright-report/**'],
+    // .vscode/cucumber-glue: auto-generated stub files for the VS Code Cucumber extension's
+    // autocomplete/navigation (see .vscode/settings.json's cucumber.glue) - not real runtime
+    // code (the actual step definitions live in steps/*.ts), so unused-param lint noise there
+    // isn't a real code-quality issue.
+    ignores: ['.features-gen/**', '.vscode/cucumber-glue/**', 'node_modules/**', 'allure-report/**', 'playwright-report/**'],
   },
   ...tseslint.configs.recommended,
   {

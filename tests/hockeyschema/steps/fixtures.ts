@@ -24,8 +24,18 @@ export const test = base.extend<BddFixtures & { _allureMeta: void }>({
         await safeAllure(() => allure.label('type', type));
       }
 
+      // Risk tag (exactly one expected per scenario, see tests/hockeyschema/todo.md)
+      // mapped to Allure's severity scale; @smoke is a separate, orthogonal
+      // "always run this" flag rather than a risk level, so it only sets a
+      // severity when no risk tag is present.
       if (tags.includes('critical')) {
         await safeAllure(() => allure.severity('critical'));
+      } else if (tags.includes('high')) {
+        await safeAllure(() => allure.severity('normal'));
+      } else if (tags.includes('medium')) {
+        await safeAllure(() => allure.severity('minor'));
+      } else if (tags.includes('low')) {
+        await safeAllure(() => allure.severity('trivial'));
       } else if (tags.includes('smoke')) {
         await safeAllure(() => allure.severity('normal'));
       }

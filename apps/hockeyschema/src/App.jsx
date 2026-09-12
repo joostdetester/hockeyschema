@@ -8,6 +8,7 @@ import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
+import { subscribeToPush, unsubscribeFromPush } from './push.js';
 
 function css(str) {
   const obj = {};
@@ -37,6 +38,27 @@ const POS = [
 ];
 const PMAP = {};
 POS.forEach(p => { PMAP[p.k] = p; });
+const ZONE_COL = { links: 0, as: 1, rechts: 2 };
+// Toegestane positiewissel binnen een kwart (zie enforceAdjacency hieronder): verticaal (zelfde
+// zone/as) en horizontaal (zelfde linie) mogen over elke afstand, een diagonale wissel (andere
+// linie én andere zone) alleen naar een direct aangesloten positie (1 linie en 1 zone verschil).
+// Voor de doelpuntmelding (banner/spraak/pushmelding): een teamnaam is altijd
+// "<clubnaam> MO<leeftijd>-<team>" (bv. "Ring Pass MO18-3", "HCRB MO18-2") - dit knipt alles
+// vanaf " MO<cijfers>-<cijfers>" eraf en houdt puur de clubnaam over. Matcht de naam niet dat
+// patroon (bv. een onbekende/vrij ingevoerde tegenstandernaam), dan blijft hij ongewijzigd.
+function clubOnly(name) {
+  if (!name) return name;
+  const m = name.match(/^(.*?)\s+MO\d+-\d+\s*$/i);
+  return m ? m[1] : name;
+}
+function posAllowed(fromPos, toPos) {
+  if (fromPos === toPos) return true;
+  const a = PMAP[fromPos], b = PMAP[toPos];
+  if (!a || !b) return true;
+  if (a.line === b.line) return true;
+  if (a.zone === b.zone) return true;
+  return Math.abs(a.line - b.line) === 1 && Math.abs(ZONE_COL[a.zone] - ZONE_COL[b.zone]) === 1;
+}
 const FILL_ORDER = ['SP', 'MM', 'VS', 'LM', 'RV', 'RH', 'RA', 'LV', 'LH', 'LA'];
 const LINES = [['LV', 'SP', 'RV'], ['LH', 'MM', 'RH'], ['LA', 'VS', 'RA'], ['LM']];
 const ZONE_W = { as: 1.0, rechts: 0.6, links: 0.3 };
@@ -46,6 +68,11 @@ const QUARTER_MIN = 17.5;
 // daar tijdig van op de hoogte gebracht kunnen worden.
 const TIMER_TOTAL_MS = Math.round(QUARTER_MIN * 60 * 1000);
 const TIMER_ALERT_REMAINING_MS = TIMER_TOTAL_MS - Math.round((QUARTER_MIN / 2 - 1) * 60 * 1000);
+// Het opgenomen wisselsignaal.m4a-bestand zelf is aan de zachte kant - een <audio>-element kan
+// nooit harder dan volume 1.0, dus versterken we 'm via de Web Audio API (GainNode) boven dat
+// plafond uit. Bewust flink boven 1 - het mag best wat overstuurd/schel klinken, dat maakt 'm
+// juist beter hoorbaar langs de lijn.
+const WISSEL_SIGNAL_GAIN = 4;
 // Live wedstrijdvolgen: de klok per kwart leeft in m.clocks (Firestore-gesynchroniseerd, dus
 // voor iedereen live zichtbaar) i.p.v. lokale state - dit is de standaardwaarde voor een kwart
 // dat nog niet is aangeraakt.
@@ -127,6 +154,9 @@ const C_MOVE_BG = 'var(--color-accent-100)';
 // wijzen om volledig scherm te activeren, naar binnen om het te verlaten.
 const ICON_FULLSCREEN = 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z';
 const ICON_FULLSCREEN_EXIT = 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z';
+// Twee gebogen pijlen (boven naar boven, onder naar beneden) - voor de 1e/2e-helft-wisselknop op
+// een positiecel, zie swapPlayersInQuarter.
+const ICON_SWAP_VERT = 'M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 21l4-3.99h-3z';
 
 // Invallers kunnen dezelfde voornaam hebben als een vaste speelster - overal waar alleen de
 // voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
@@ -182,12 +212,17 @@ function weight(p, mode) {
 function assign(onPlayers, prevOn, mode, opts) {
   const zoneOn = !opts || opts.zone !== false;
   const contOn = !opts || opts.continuity !== false;
+  const strictAdjacency = !!(opts && opts.strictAdjacency);
+  const prevPosOf = prevOn ? Object.keys(prevOn).reduce((m2, k) => { m2[prevOn[k]] = k; return m2; }, {}) : null;
   const cost = (p, pos) => {
     const r = p.prefs[pos];
-    const base = (r ? r : 9) * 1000;
+    const avoided = !!(p.avoid && p.avoid[pos]);
+    const base = avoided ? 9000000 : (r ? r : 9) * 1000;
     const z = (mode === 'standaard' || !zoneOn) ? 0 : ZONE_W[PMAP[pos].zone] * (100 - ratingOf(p));
     const cont = (contOn && prevOn && prevOn[pos] === p.id) ? -800 : 0;
-    return base + z + cont;
+    const prevPos = prevPosOf && prevPosOf[p.id];
+    const adj = (strictAdjacency && prevPos && prevPos !== pos && !posAllowed(prevPos, pos)) ? 500000 : 0;
+    return base + z + cont + adj;
   };
   let pool = onPlayers.slice();
   const res = {};
@@ -223,8 +258,11 @@ function assign(onPlayers, prevOn, mode, opts) {
 // blokken niet met terugwerkende kracht wijzigen, en respecteert de "bank 1e helft -> gegarandeerd
 // veld 2e helft"-garantie door nooit iemand uit de tweede helft van een kwart te halen die daar
 // verplicht staat, en nooit iemand een heel kwart op de bank te zetten.
-function enforceFairness(blocks, field, keeperIds, injuries, ptMode, fromBlock, assignOpts) {
-  const fullMatch = field.filter(p => injuries[p.id] == null && keeperIds.indexOf(p.id) < 0);
+function enforceFairness(blocks, field, keeperIds, injuries, fixedBlocks, ptMode, fromBlock, assignOpts) {
+  // Een speler met een vast aantal speelblokken (bv. een lichte blessure, of een speler die
+  // dit juist moet inhalen) wijkt bewust af van de rest - net als een uitvaller telt ze niet
+  // mee in de "max 1 blok verschil"-eerlijkheidscheck tussen de overige veldspelers.
+  const fullMatch = field.filter(p => injuries[p.id] == null && fixedBlocks[p.id] == null && keeperIds.indexOf(p.id) < 0);
   const fmIds = fullMatch.map(p => p.id);
   if (fmIds.length < 2) return blocks;
   const byId = {};
@@ -258,7 +296,7 @@ function enforceFairness(blocks, field, keeperIds, injuries, ptMode, fromBlock, 
       if (sitsWholeQuarter(b, maxId)) continue;
       const prevOn = b > 0 ? blocks[b - 1].on : null;
       const newOnPlayers = onIds.map(id => id === maxId ? byId[minId] : byId[id]);
-      blk.on = assign(newOnPlayers, prevOn, ptMode, assignOpts);
+      blk.on = assign(newOnPlayers, prevOn, ptMode, { ...assignOpts, strictAdjacency: !!assignOpts.adjacencyOn && b % 2 === 1 });
       blk.bench = blk.bench.filter(id => id !== minId).concat([maxId]);
       done = true;
     }
@@ -279,20 +317,35 @@ function buildSchedule(match, players, fromHalf) {
   field.forEach(p => { played[p.id] = 0; });
   prev.forEach(b => Object.keys(b.on).forEach(k => { if (played[b.on[k]] != null) played[b.on[k]]++; }));
   const ptMode = match.playTimeMode === 'zwak' || match.playTimeMode === 'standaard' ? match.playTimeMode : 'sterk';
-  const assignOpts = { zone: match.zoneStrength !== false, continuity: match.continuity !== false };
+  const assignOpts = { zone: match.zoneStrength !== false, continuity: match.continuity !== false, adjacencyOn: match.positionAdjacency !== false };
   const prefCorrectionOn = match.prefCorrection !== false;
+  // Schuifoptie tussen "gelijke sterkte over de hele wedstrijd" (0) en het huidige gedrag,
+  // sterkste/zwakste speelsters vooral in het 1e en 4e kwart (100, ook de default voor
+  // wedstrijden zonder deze instelling - dus onveranderd gedrag).
+  const strengthCurve = Math.max(0, Math.min(100, match.strengthCurve == null ? 100 : match.strengthCurve)) / 100;
   const wsum = field.reduce((s, p) => s + weight(p, ptMode), 0);
   const slots = Math.min(10, field.length);
   const blocks = prev.slice();
   const injuries = match.injuries || {};
+  // Vast aantal speelblokken voor een speler (bv. lichte blessure, of juist een speler die
+  // minder vaak heeft gespeeld en deze wedstrijd toch N blokken moet krijgen). Anders dan
+  // injuries (uit vanaf een bepaald blok) geldt dit voor de hele wedstrijd, en anders dan een
+  // bovengrens overrulet dit haar sterkte-gewicht volledig - zonder deze override zou zo'n
+  // speler onder Sterk/Zwak nooit boven haar natuurlijke (lagere) aandeel uitkomen, ook niet
+  // als hier expliciet een hoger aantal wordt ingesteld. Het algoritme verspreidt haar N
+  // blokken nog steeds over de wedstrijd (via dezelfde frac-gebaseerde planning hieronder)
+  // i.p.v. ze allemaal vooraan te zetten.
+  const fixedBlocks = match.fixedBlocks || {};
   for (let b = prev.length; b < 8; b++) {
-    const avail = field.filter(p => p.id !== keeperAt(b) && !(injuries[p.id] != null && b >= injuries[p.id]));
+    const avail = field.filter(p => p.id !== keeperAt(b) && !(injuries[p.id] != null && b >= injuries[p.id])
+      && !(fixedBlocks[p.id] != null && played[p.id] >= fixedBlocks[p.id]));
     const need = Math.min(10, avail.length);
     const frac = (b + 1) / 8;
     const prevOnSet = blocks[b - 1] ? Object.keys(blocks[b - 1].on).map(k => blocks[b - 1].on[k]) : null;
-    const imp = (b < 2 || b >= 6) ? 1 : -0.6;
+    const imp = ((b < 2 || b >= 6) ? 1 : -0.6) * strengthCurve;
+    const blockAssignOpts = { ...assignOpts, strictAdjacency: !!assignOpts.adjacencyOn && b % 2 === 1 };
     const scored = avail.map(p => {
-      const E = Math.min(8, 8 * slots * weight(p, ptMode) / wsum);
+      const E = fixedBlocks[p.id] != null ? fixedBlocks[p.id] : Math.min(8, 8 * slots * weight(p, ptMode) / wsum);
       const deficit = E * frac - played[p.id];
       const sat = prevOnSet ? prevOnSet.indexOf(p.id) < 0 : false;
       const strengthNudge = ptMode === 'standaard' ? 0 : imp * 1 * ((ratingOf(p) - 70) / 100);
@@ -313,7 +366,7 @@ function buildSchedule(match, players, fromHalf) {
     const prevOn = blocks[b - 1] ? blocks[b - 1].on : null;
     const byId = {};
     avail.forEach(p => { byId[p.id] = p; });
-    let assignMap = assign(on, prevOn, ptMode, assignOpts);
+    let assignMap = assign(on, prevOn, ptMode, blockAssignOpts);
     if (prefCorrectionOn) {
       const prefCost = map => Object.keys(map).reduce((s, pos) => {
         const p = byId[map[pos]];
@@ -332,7 +385,7 @@ function buildSchedule(match, players, fromHalf) {
           let best = null;
           bench.filter(bp => bp.prefs[pos]).forEach(bp => {
             const newOn = on.map(p => p.id === offId ? bp : p);
-            const cand = assign(newOn, prevOn, ptMode, assignOpts);
+            const cand = assign(newOn, prevOn, ptMode, blockAssignOpts);
             const c = prefCost(cand);
             if (!best || c < best.c) best = { c, cand, newOn, bp };
           });
@@ -349,7 +402,7 @@ function buildSchedule(match, players, fromHalf) {
     on.forEach(p => { played[p.id]++; });
     blocks.push({ on: assignMap, bench: bench.map(p => p.id) });
   }
-  return enforceFairness(blocks, field, keeperIds, injuries, ptMode, prev.length, assignOpts);
+  return enforceFairness(blocks, field, keeperIds, injuries, fixedBlocks, ptMode, prev.length, assignOpts);
 }
 
 function halvesPlayed(schedule) {
@@ -386,9 +439,11 @@ export default function App() {
   const [newIsSub, setNewIsSub] = useState(false);
   const [injPlayer, setInjPlayer] = useState('');
   const [injFrom, setInjFrom] = useState('2');
+  const [fixedBlocksPlayer, setFixedBlocksPlayer] = useState('');
+  const [fixedBlocksValue, setFixedBlocksValue] = useState('4');
   const [fixtures, setFixtures] = useState([]);
   const [addFixtureOpen, setAddFixtureOpen] = useState(false);
-  const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true });
+  const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, veld: '' });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -420,10 +475,29 @@ export default function App() {
   const [lisaEditing, setLisaEditing] = useState(false);
   const [lisaTeamOptions, setLisaTeamOptions] = useState(null);
   const [lisaTeamsBusy, setLisaTeamsBusy] = useState(false);
+  // mijn.lisahockey.nl (aanwezigheid) - eigen state/doc, los van lisaConfig/lisaForm hierboven:
+  // dit token is admin-only leesbaar (lisaClubs/{clubId}/config/lisaMy, zie firestore.rules),
+  // niet coach-leesbaar zoals de clubwebsite-koppeling, en ligt één keer per club opgeslagen
+  // (clubId = lisaConfig.clubDudaId) i.p.v. gedupliceerd per team.
+  const [lisaMyConfig, setLisaMyConfig] = useState(null);
+  const [lisaMyForm, setLisaMyForm] = useState({ myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+  const [lisaMyError, setLisaMyError] = useState('');
+  const [lisaMyEditing, setLisaMyEditing] = useState(false);
+  const [attendance, setAttendance] = useState(null);
+  const [attendanceBusy, setAttendanceBusy] = useState(false);
+  const [attendanceError, setAttendanceError] = useState('');
   const [standings, setStandings] = useState([]);
   const [standingsUpdatedAt, setStandingsUpdatedAt] = useState(null);
   const [standingsBusy, setStandingsBusy] = useState(false);
   const [standingsError, setStandingsError] = useState('');
+  // Het volledige competitieprogramma (ook wedstrijden waar dit team niet bij betrokken is) -
+  // zie refreshPouleSchedule in functions/index.js. Getoond onder Programma.
+  const [pouleName, setPouleName] = useState('');
+  const [pouleSchedule, setPouleSchedule] = useState([]);
+  const [pouleScheduleUpdatedAt, setPouleScheduleUpdatedAt] = useState(null);
+  const [pouleScheduleBusy, setPouleScheduleBusy] = useState(false);
+  const [pouleScheduleError, setPouleScheduleError] = useState('');
+  const [pouleScheduleOpen, setPouleScheduleOpen] = useState(false);
   const [selectedPouleId, setSelectedPouleId] = useState(null);
   // Los van selectedPouleId (dat is specifiek voor de Standen-tabel/importlabel): dit filtert
   // de wedstrijdenlijst op Programma zelf, en kan behalve een echte competitie ook
@@ -464,8 +538,46 @@ export default function App() {
   // toestel van de coach, dus lokaal en per kwart-index bijgehouden - anders zou het wegklikken
   // van het signaal in kwart 1 het signaal in kwart 3 ook onterecht onderdrukken.
   const [alertDismissedByQuarter, setAlertDismissedByQuarter] = useState({});
+  // Doelpunt-melding voor eigen goals - zie de detectie-effect verderop. Los van scorerPicker
+  // (dat is het invoerdialoogje voor de coach); dit is de viering die IEDEREEN te zien krijgt,
+  // op elk tabblad, zodra de nieuwe stand binnenkomt.
+  const [goalToast, setGoalToast] = useState(null);
+  const goalToastTimeoutRef = useRef(null);
+  // Resultaat van de laatste subscribeToPush-poging ('granted'/'denied'/'unsupported'/null) -
+  // puur om na de klik op "Meldingen aanzetten" even terug te melden wat er gebeurde (bv. de
+  // gebruiker weigerde toestemming, of dit toestel/deze browser ondersteunt het niet - zie de
+  // iOS-kanttekening in push.js).
+  const [pushStatus, setPushStatus] = useState(null);
+  // Of dit toestel/deze browser voor dit team is aangemeld voor pushmeldingen - puur lokaal
+  // bewaard (localStorage), want geen enkele client mag pushTokens teruglezen (zie
+  // firestore.rules) om te checken of er al een token voor dit toestel bestaat. Browsers kunnen
+  // een eenmaal gegeven Notification-toestemming zelf niet intrekken vanuit de pagina (alleen de
+  // gebruiker, via de site-instellingen) - "uitzetten" hier betekent dus: het token bij dit team
+  // verwijderen zodat onGoalScored er niets meer naartoe stuurt, niet de browserpermissie zelf
+  // aanraken.
+  const [pushSubscribed, setPushSubscribed] = useState(() => {
+    try { return window.localStorage.getItem('hockeyschema.pushSubscribed') === '1'; } catch { return false; }
+  });
+  async function togglePush() {
+    if (pushSubscribed) {
+      await unsubscribeFromPush(currentTeamId);
+      setPushSubscribed(false);
+      setPushStatus(null);
+      try { window.localStorage.removeItem('hockeyschema.pushSubscribed'); } catch { /* localStorage niet beschikbaar */ }
+      return;
+    }
+    const status = await subscribeToPush(currentTeamId);
+    setPushStatus(status);
+    if (status === 'granted') {
+      setPushSubscribed(true);
+      try { window.localStorage.setItem('hockeyschema.pushSubscribed', '1'); } catch { /* localStorage niet beschikbaar */ }
+    }
+  }
   const [scorerPicker, setScorerPicker] = useState(false);
   const [scorerSelected, setScorerSelected] = useState(null);
+  // Wie de assist gaf bij dit doelpunt - optioneel, en kan nooit gelijk zijn aan scorerSelected
+  // (zie de kolom-uitsluiting bij de "Wie scoorde?"-dialoog).
+  const [assistSelected, setAssistSelected] = useState(null);
   const [goalRemark, setGoalRemark] = useState('');
   const [themGoalDialog, setThemGoalDialog] = useState(false);
   const [commentDialog, setCommentDialog] = useState(false);
@@ -483,8 +595,113 @@ export default function App() {
   const [editEntryIdx, setEditEntryIdx] = useState(null);
   const [editMinute, setEditMinute] = useState('');
   const [editText, setEditText] = useState('');
+  // Alleen relevant als de bewerkte regel een eigen doelpunt is ('us') - wisselt de schutter,
+  // bv. om een verkeerd geselecteerde speelster achteraf te corrigeren.
+  const [editScorerId, setEditScorerId] = useState('');
+  // Idem voor de assist - lege string ('—') betekent "geen assist".
+  const [editAssistId, setEditAssistId] = useState('');
+  // Extra drempel om de +/- knoppen bij de Live stand van een al afgesloten wedstrijd
+  // (m.liveEnded, bv. via "Heropen") pas te tonen ná een expliciete klik op "Eindstand
+  // wijzigen" - zodat een per ongeluk klik daar niet zomaar een vastgelegde eindstand wijzigt.
+  // Vervalt telkens bij het (opnieuw) laden van een wedstrijd (geen persistente state nodig).
+  const [scoreEditUnlocked, setScoreEditUnlocked] = useState(false);
   const migratedRef = useRef(false);
-
+  // Wisselsignaal (zie wisselSignaalActive) - het Audio-object wordt lazy aangemaakt (pas bij de
+  // eerste keer afspelen) en hergebruikt; wisselSignaalWasActiveRef onthoudt alleen of het bij de
+  // vorige render al actief was, om precies op de false->true-overgang af te spelen.
+  const wisselSignaalAudioRef = useRef(null);
+  const wisselSignaalWasActiveRef = useRef(false);
+  // Gedeelde AudioContext voor zowel het versterkte wisselsignaal als de synthetische
+  // kwarteinde-zoemer hieronder - lazy aangemaakt (moet op de meeste browsers na een
+  // gebruikersactie gebeuren, dus pas bij de eerste knopklik in wedstrijdmodus) en hergebruikt.
+  const audioCtxRef = useRef(null);
+  const wisselGainRef = useRef(null);
+  // Zelfde false->true-detectie als wisselSignaalWasActiveRef, maar dan voor de kwarteinde-zoemer
+  // (die eenmalig afspeelt i.p.v. te loopen zolang de klok op 0 staat).
+  const quarterEndWasActiveRef = useRef(false);
+  // Baseline voor de doelpunt-viering hieronder: hoeveel eigen goals er al in m.goalLog stonden
+  // toen dít wedstrijddocument voor het laatst wisselde (fixtureId), zodat het openen/verversen
+  // van een wedstrijd met al gescoorde doelpunten niet meteen de hele viering afvuurt. null =
+  // nog niet geïnitialiseerd voor de huidige wedstrijd.
+  const prevUsGoalCountRef = useRef(null);
+  // Zelfde baseline, maar voor doelpunten van de tegenstander (team 'them') - apart bijgehouden
+  // omdat een write in goalLog altijd maar één van de twee tellingen ophoogt.
+  const prevThemGoalCountRef = useRef(null);
+  const goalToastFixtureKeyRef = useRef(undefined);
+  // Feitelijke aankondiging: wie scoorde, in welke minuut, en (indien ingevuld) wie de assist
+  // gaf - geen verzonnen tekst meer, puur de kale feiten.
+  // Noemt de stand met teamnamen erbij, in dezelfde thuis/uit-volgorde als scheduleTitle
+  // hieronder (bv. "Ring Pass 3 HCRB 29") i.p.v. kale cijfers - "us"/"them" zijn altijd eigen/
+  // tegenstander, dus die moeten hier nog naar thuis/uit omgezet worden.
+  function opponentName() {
+    const fx = fixtures.find(f => f.id === m.fixtureId);
+    return clubOnly(m.opponent || (fx ? fx.opponent : 'onbekend'));
+  }
+  function scoreLine(us, them) {
+    const fx = fixtures.find(f => f.id === m.fixtureId);
+    const opp = opponentName();
+    return fx && fx.home === false
+      ? `${opp} tegen ${clubName} stand is ${them} tegen ${us}`
+      : `${clubName} tegen ${opp} stand is ${us} tegen ${them}`;
+  }
+  // Wisseling-in-de-wedstrijd-tekst die vóór de doelpunt-info komt: wie er nu voor komt te
+  // staan, uitloopt, gelijkmaakt, of de achterstand verkleint - "before" is de stand vlak vóór
+  // dít doelpunt (dus altijd exact 1 lager voor de score van de kant die zojuist scoorde).
+  function leadPrefix(beforeUs, beforeThem, scorerIsUs) {
+    const scorerName = scorerIsUs ? clubName : opponentName();
+    if (beforeUs === beforeThem) return `${scorerName} komt op voorsprong! `;
+    const scorerWasLeading = scorerIsUs ? beforeUs > beforeThem : beforeThem > beforeUs;
+    if (scorerWasLeading) return `${scorerName} loopt uit! `;
+    const afterUs = beforeUs + (scorerIsUs ? 1 : 0);
+    const afterThem = beforeThem + (scorerIsUs ? 0 : 1);
+    if (afterUs === afterThem) return `${scorerName} maakt gelijk! `;
+    return `${scorerName} brengt de achterstand terug tot ${Math.abs(afterUs - afterThem)}! `;
+  }
+  function buildGoalAnnouncement(name, minute, assistName, us, them) {
+    const prefix = leadPrefix(us - 1, them, true);
+    const base = `${prefix}${name} scoort in de ${minute}e minuut!`;
+    const withAssist = assistName ? `${base} Assist van ${assistName}.` : base;
+    return `${withAssist} ${scoreLine(us, them)}.`;
+  }
+  // Zelfde soort feitelijke aankondiging als hierboven, maar dan voor een tegendoelpunt - geen
+  // scorer/assist bekend (die worden niet ingevoerd voor de tegenstander), dus puur minuut + stand.
+  function buildAgainstAnnouncement(minute, us, them) {
+    const prefix = leadPrefix(us, them - 1, false);
+    return `${prefix}Tegendoelpunt in de ${minute}e minuut. ${scoreLine(us, them)}.`;
+  }
+  function ensureAudioCtx() {
+    if (!audioCtxRef.current) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      audioCtxRef.current = new Ctx();
+    }
+    if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume().catch(() => {});
+    return audioCtxRef.current;
+  }
+  // Hard, dwingend eindsignaal (drie korte claxonstoten) voor het einde van een kwart - anders
+  // dan het wisselsignaal is hier geen opgenomen bestand voor, dus synthetiseren we 'm met een
+  // blokgolf (schel/dringend) rechtstreeks via de Web Audio API.
+  function playQuarterEndBuzzer() {
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    const beep = (start, dur) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 440;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(1, start + 0.02);
+      gain.gain.setValueAtTime(1, Math.max(start + 0.02, start + dur - 0.03));
+      gain.gain.linearRampToValueAtTime(0, start + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur);
+    };
+    const now = ctx.currentTime;
+    beep(now, 0.35);
+    beep(now + 0.45, 0.35);
+    beep(now + 0.9, 0.6);
+  }
   // isMyTeam: ingelogd én (coach van het bekeken team, of gebruiker is admin) - een manager
   // telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via canManageOuders
   // hieronder specifiek het bewerken van Ouders. Iemand kan coach van meerdere teams zijn -
@@ -505,6 +722,32 @@ export default function App() {
     if (!(matchMode && isMyTeam) && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   }, [matchMode, isMyTeam]);
 
+  // Bij het starten van wedstrijdmodus staat het geluid van de wissel-/eindsignalen standaard op
+  // maximaal - de knopklik zelf is meteen ook de gebruikersactie die de meeste browsers nodig
+  // hebben om audio (opnieuw) toe te staan, dus dit is ook het moment om de AudioContext te
+  // (her)activeren zodat het kwarteinde-signaal straks vanzelf (zonder nieuwe klik) mag afspelen.
+  useEffect(() => {
+    if (!(matchMode && isMyTeam)) return;
+    ensureAudioCtx();
+    if (wisselGainRef.current) wisselGainRef.current.gain.value = WISSEL_SIGNAL_GAIN;
+    if (wisselSignaalAudioRef.current) {
+      wisselSignaalAudioRef.current.volume = 1;
+      wisselSignaalAudioRef.current.muted = false;
+    }
+  }, [matchMode, isMyTeam]);
+
+  // selectedPouleId/programmaCompetitionFilter zijn poule_id's (LISA-standen-ids) - die zijn
+  // NIET hetzelfde tussen teams, ook niet bij een gelijknamige competitie ("Meisjes O18
+  // voorcompetitie 4e klasse" heeft voor MO18-1 een andere poule_id dan voor MO18-2). Zonder
+  // reset bleef een expliciete keuze bij het wisselen van team gewoon staan, wat dan een
+  // poule_id was die niet in de poules-lijst van het NIEUWE team voorkomt - de Competitie-
+  // filter op Programma/Standen viel dan stil terug op "niets toont" (shortName werd null),
+  // in plaats van op zijn eigen default (de huidige competitie van dat team).
+  useEffect(() => {
+    setSelectedPouleId(null);
+    setProgrammaCompetitionFilter(null);
+  }, [currentTeamId]);
+
   const publicSyncRef = useRef('');
   const managerFixturesSyncRef = useRef('');
   const historySyncRef = useRef('');
@@ -520,7 +763,7 @@ export default function App() {
     managerFixturesSyncRef.current = '';
     const unsub = onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'public'), snap => {
       const d = snap.data() || {};
-      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null, noteCategories: d.noteCategories });
+      publicSyncRef.current = JSON.stringify({ players: d.players || [], sc: d.sc, fixtures: d.fixtures, match: d.match, standings: d.standings || [], standingsUpdatedAt: d.standingsUpdatedAt || null, noteCategories: d.noteCategories, pouleName: d.pouleName || '', pouleSchedule: d.pouleSchedule || [], pouleScheduleUpdatedAt: d.pouleScheduleUpdatedAt || null });
       managerFixturesSyncRef.current = JSON.stringify(d.fixtures || []);
       setPlayers(d.players || []);
       setSc(d.sc || { verdedigen: [], aanval: [] });
@@ -529,6 +772,9 @@ export default function App() {
       setStandings(d.standings || []);
       setNoteCategories(d.noteCategories || DEFAULT_NOTE_CATEGORIES);
       setStandingsUpdatedAt(d.standingsUpdatedAt || null);
+      setPouleName(d.pouleName || '');
+      setPouleSchedule(d.pouleSchedule || []);
+      setPouleScheduleUpdatedAt(d.pouleScheduleUpdatedAt || null);
       setLoadedTeamId(currentTeamId);
     }, () => setLoadedTeamId(currentTeamId));
     return unsub;
@@ -536,12 +782,12 @@ export default function App() {
 
   useEffect(() => {
     if (loadedTeamId !== currentTeamId || readOnly || !currentTeamId) return;
-    const blob = { players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories };
+    const blob = { players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories, pouleName, pouleSchedule, pouleScheduleUpdatedAt };
     const json = JSON.stringify(blob);
     if (json === publicSyncRef.current) return;
     publicSyncRef.current = json;
     setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), blob).catch(() => {});
-  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories]);
+  }, [loadedTeamId, readOnly, currentTeamId, players, sc, fixtures, match, standings, standingsUpdatedAt, noteCategories, pouleName, pouleSchedule, pouleScheduleUpdatedAt]);
 
   // Managers zijn geen coach (isMyTeam/readOnly geldt niet voor ze), dus de blob-sync
   // hierboven slaat voor hen over - maar ze mogen wél de Ouders-indeling (fixtures)
@@ -594,6 +840,36 @@ export default function App() {
         : { clubDudaId: '', teamId: '', teamName: '', authHeader: '' });
     });
   }, [currentTeamId, canSeeHistory]);
+
+  // mijn.lisahockey.nl (aanwezigheid) - admin-only leesbaar (zie firestore.rules), dus deze
+  // subscription overslaan i.p.v. een permission-denied te laten knallen voor een coach. Leeft
+  // onder lisaClubs/{clubDudaId}, dus zonder clubwebsite-koppeling (lisaConfig) weten we nog
+  // niet bij welke club dit team hoort en kunnen we 'm niet opzoeken.
+  const lisaMyClubId = lisaConfig?.clubDudaId || null;
+  useEffect(() => {
+    setLisaMyConfig(null);
+    setLisaMyForm({ myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+    setLisaMyEditing(false);
+    if (!lisaMyClubId || !isAdmin) return;
+    return onSnapshot(doc(db, 'lisaClubs', lisaMyClubId, 'config', 'lisaMy'), snap => {
+      const d = snap.data() || null;
+      setLisaMyConfig(d);
+      setLisaMyForm(d
+        ? { myFederationId: d.myFederationId || '', myAuthBasic: d.myAuthBasic || '', myAuthToken: d.myAuthToken || '' }
+        : { myFederationId: '', myAuthBasic: '', myAuthToken: '' });
+    });
+  }, [lisaMyClubId, isAdmin]);
+
+  // Aanwezigheid (mijn.lisahockey.nl) - alleen voor teamleden/admin (zie firestore.rules), dus
+  // deze subscription overslaan i.p.v. een permission-denied te laten knallen als iemand geen
+  // teamlid is.
+  useEffect(() => {
+    setAttendance(null);
+    if (!currentTeamId || !isMyTeam) return;
+    return onSnapshot(doc(db, 'teams', currentTeamId, 'state', 'attendance'), snap => {
+      setAttendance(snap.data() || null);
+    });
+  }, [currentTeamId, isMyTeam]);
 
   // Alle gebruikers, om per team te tonen wie er als coach aan gekoppeld is - alleen
   // beheerders mogen andermans users/{uid} lezen (zie firestore.rules).
@@ -697,6 +973,26 @@ export default function App() {
     catch (e) { setLisaError('Opslaan mislukt.'); }
   }
 
+  // Los van saveLisaConfig hierboven: schrijft naar lisaClubs/{clubId}/config/lisaMy, dat
+  // admin-only leesbaar is (zie firestore.rules) omdat dit token niet team-gescoped is - zie de
+  // toelichting bij de "Aanwezigheid (mijn.lisahockey.nl)"-sectie in de UI. clubId komt van de
+  // clubwebsite-koppeling hierboven (lisaConfig.clubDudaId), dus die moet eerst gezet zijn.
+  async function saveLisaMyConfig() {
+    if (!isAdmin || !lisaMyClubId) return;
+    setLisaMyError('');
+    const cfg = {
+      myFederationId: lisaMyForm.myFederationId.trim(),
+      myAuthBasic: lisaMyForm.myAuthBasic.trim(),
+      myAuthToken: lisaMyForm.myAuthToken.trim(),
+    };
+    if (!cfg.myFederationId || !cfg.myAuthBasic || !cfg.myAuthToken) {
+      setLisaMyError('Vul alle 3 velden in.');
+      return;
+    }
+    try { await setDoc(doc(db, 'lisaClubs', lisaMyClubId, 'config', 'lisaMy'), cfg); setLisaMyEditing(false); }
+    catch (e) { setLisaMyError('Opslaan mislukt.'); }
+  }
+
   async function importLisaMatches() {
     if (readOnly || !lisaConfig) return;
     setLisaBusy(true);
@@ -721,26 +1017,50 @@ export default function App() {
           };
         });
       if (!rows.length) { setLisaError('Geen wedstrijden gevonden.'); return; }
-      setFixtures(fs => {
-        const idxByKey = {};
-        fs.forEach((f, i) => { idxByKey[f.date + '|' + f.opponent] = i; });
-        const next = fs.slice();
-        const added = [];
-        rows.forEach(r => {
-          const idx = idxByKey[r.date + '|' + r.opponent];
-          if (idx == null) { added.push(r); return; }
-          const existing = next[idx];
-          if (existing.time !== r.time || existing.home !== r.home || existing.competitie !== r.competitie) {
-            next[idx] = { ...existing, time: r.time, home: r.home, competitie: r.competitie };
-          }
-        });
-        return next.concat(added);
+      const idxByKey = {};
+      fixtures.forEach((f, i) => { idxByKey[f.date + '|' + f.opponent] = i; });
+      const next = fixtures.slice();
+      const added = [];
+      rows.forEach(r => {
+        const idx = idxByKey[r.date + '|' + r.opponent];
+        if (idx == null) { added.push(r); return; }
+        const existing = next[idx];
+        if (existing.time !== r.time || existing.home !== r.home || existing.competitie !== r.competitie) {
+          next[idx] = { ...existing, time: r.time, home: r.home, competitie: r.competitie };
+        }
       });
+      const updatedFixtures = next.concat(added);
+      setFixtures(updatedFixtures);
+      // Direct wegschrijven i.p.v. wachten op de gedebouncte auto-sync (zie useEffect op
+      // players/sc/fixtures/... hierboven) - de veldnummer-ophaal-aanroep hieronder leest
+      // state/public.fixtures meteen terug om erin te kunnen matchen, en moet de zojuist
+      // geïmporteerde rijen dus al aantreffen, niet pas na de volgende render.
+      if (currentTeamId) {
+        await setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), { fixtures: updatedFixtures }, { merge: true });
+      }
     } catch (e) {
       setLisaError('Importeren mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
+      return;
     } finally {
       setLisaBusy(false);
     }
+    // matches_upcoming_round (hierboven) geeft alleen nog te spelen wedstrijden terug - een al
+    // gespeelde wedstrijd die ontbreekt (bv. per ongeluk verwijderd) komt daar dus niet in terug.
+    // refreshPouleSchedule (zie hieronder) haalt via match_results alsnog de eigen uitslag op en
+    // zet 'm terug (of werkt de eindstand bij, LISA is daarbij leidend). Best-effort: LISA hapert
+    // even -> faalt gewoon stil, import zelf blijft geslaagd.
+    try {
+      await refreshPouleSchedule();
+    } catch (e) { /* LISA tijdelijk niet bereikbaar - niet blokkerend voor de geslaagde import */ }
+    // Veldnummers erbij halen via mijn.lisahockey.nl (zie refreshTeamAttendance) zodra de
+    // wedstrijden zelf binnen zijn, zodat ouders het veld meteen zien i.p.v. pas na een
+    // aparte "Aanwezigheid ophalen"-actie. Best-effort en niet blokkerend voor de import: als
+    // de club deze (aparte, admin-only ingestelde) koppeling nog niet heeft, of LISA hapert
+    // even, faalt dit gewoon stil - de zojuist geïmporteerde wedstrijden blijven dan zonder
+    // veld staan, precies zoals vóór deze koppeling bestond.
+    try {
+      await httpsCallable(functions, 'refreshTeamAttendance')({ teamId: currentTeamId });
+    } catch (e) { /* geen mijn.lisahockey.nl-koppeling voor deze club, of tijdelijk niet bereikbaar */ }
   }
 
   // Standen komen van dezelfde LISA-koppeling als de wedstrijd-import, maar worden
@@ -761,6 +1081,133 @@ export default function App() {
       setStandingsError(e.message || 'Stand ophalen mislukt.');
     } finally {
       setStandingsBusy(false);
+    }
+  }
+
+  // Het volledige competitieprogramma (ook wedstrijden waar dit team niet bij betrokken is) -
+  // draait, anders dan de eerdere opzet, rechtstreeks vanuit de client op dezelfde publieke
+  // "duda"-koppeling als importLisaMatches (lisaConfig.authHeader) - geen personal
+  // mijn.lisahockey.nl-token nodig. matches_upcoming_round (al gebruikt door importLisaMatches,
+  // maar tot nu toe altijd gefilterd op is_selected_team) en match_results geven namelijk
+  // ONGEFILTERD al de HELE poule terug, bevestigd via een HAR-capture 2026-09-06 van
+  // www.hcrb.nl (het publieke wedstrijden-widget op de clubwebsite).
+  async function refreshPouleSchedule() {
+    if (!currentTeamId || !lisaConfig) return;
+    setPouleScheduleBusy(true);
+    setPouleScheduleError('');
+    try {
+      const headers = { authorization: lisaConfig.authHeader, accept: '*/*' };
+      const base = `https://api.lisahockey.nl/v1/duda/${lisaConfig.clubDudaId}/teams/${lisaConfig.teamId}`;
+      const [upcomingRes, resultsRes, poulesRes] = await Promise.all([
+        fetch(`${base}/matches_upcoming_round`, { headers }),
+        fetch(`${base}/match_results`, { headers }),
+        fetch(`${base}/poules`, { headers }),
+      ]);
+      if (!upcomingRes.ok && !resultsRes.ok) throw new Error('http ' + upcomingRes.status + '/' + resultsRes.status);
+      const upcoming = upcomingRes.ok ? (await upcomingRes.json()).matches_upcoming_round || [] : [];
+      const results = resultsRes.ok ? (await resultsRes.json()).match_results || [] : [];
+      const poulesData = poulesRes.ok ? (await poulesRes.json()).teams || [] : [];
+      const pName = ((poulesData.find(p => p.is_current) || poulesData[0] || {}).poule_name) || '';
+
+      // matches_upcoming_round gebruikt DD-MM-YYYY, match_results een ISO-timestamp - voor een
+      // gedeelde sortering/sleutel eerst allebei naar YYYY-MM-DD.
+      const toIsoDate = d => {
+        if (!d) return '';
+        if (d.includes('T')) return d.slice(0, 10);
+        const [dd, mo, y] = d.split('-');
+        return (dd && mo && y) ? `${y}-${mo}-${dd}` : '';
+      };
+
+      const byKey = {};
+      upcoming.forEach(m => {
+        const dateKey = toIsoDate(m.date);
+        byKey[dateKey + '|' + m.home_team_name + '|' + m.away_team_name] = {
+          id: 'u' + dateKey + m.home_team_name + m.away_team_name,
+          home: m.home_team_name, away: m.away_team_name, date: dateKey, played: false,
+        };
+      });
+      results.forEach(r => {
+        const dateKey = toIsoDate(r.date);
+        // opponent_team_name is hier de AWAY-kant (net als home_team_name de thuiskant is) -
+        // geen "wij vs opponent"-betekenis, zie de HAR-analyse: ook rijen zonder ons team
+        // (is_selected_team:false) hebben dit veld gewoon gevuld met de echte uitkant.
+        byKey[dateKey + '|' + r.home_team_name + '|' + r.opponent_team_name] = {
+          id: 'r' + dateKey + r.home_team_name + r.opponent_team_name,
+          home: r.home_team_name, away: r.opponent_team_name, date: dateKey,
+          played: true, homeScore: r.home_score, awayScore: r.away_score,
+        };
+      });
+      const pouleSchedule = Object.values(byKey).sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+
+      // LISA is leidend voor een AL GESPEELDE eigen competitiewedstrijd (niet de handmatige
+      // Eindstand-velden op Programma, zie f.friendly/f.played daar): ontbreekt de fixture (bv.
+      // per ongeluk verwijderd), dan wordt hij teruggezet; wijkt de eindstand af (bv. een
+      // verkeerd handmatig ingevoerde score), dan wordt hij overschreven.
+      const ownResults = results.filter(r => r.is_selected_team);
+      let updatedFixtures = fixtures;
+      if (ownResults.length) {
+        const idxByKey = {};
+        fixtures.forEach((f, i) => { idxByKey[f.date + '|' + f.opponent] = i; });
+        const next = fixtures.slice();
+        const competitie = shortPouleName(pName);
+        let fixturesChanged = false;
+        ownResults.forEach(r => {
+          const isHome = r.home_team_name === ownTeamName;
+          const opponent = isHome ? r.opponent_team_name : r.home_team_name;
+          const dateKey = toIsoDate(r.date);
+          const gf = isHome ? r.home_score : r.away_score;
+          const ga = isHome ? r.away_score : r.home_score;
+          const gfStr = gf == null ? '' : String(gf), gaStr = ga == null ? '' : String(ga);
+          const idx = idxByKey[dateKey + '|' + opponent];
+          if (idx == null) {
+            next.push({
+              id: 'lisares' + dateKey.replace(/-/g, '') + '_' + Date.now() + Math.random().toString(36).slice(2, 6),
+              date: dateKey, time: '', opponent, home: isHome, friendly: false, gf: gfStr, ga: gaStr,
+              ...(competitie ? { competitie } : {}),
+            });
+            fixturesChanged = true;
+          } else {
+            const needsCompetitie = competitie && !next[idx].friendly && !next[idx].competitie;
+            if (next[idx].gf !== gfStr || next[idx].ga !== gaStr || needsCompetitie) {
+              next[idx] = { ...next[idx], gf: gfStr, ga: gaStr, ...(needsCompetitie ? { competitie } : {}) };
+              fixturesChanged = true;
+            }
+          }
+        });
+        if (fixturesChanged) updatedFixtures = next;
+      }
+
+      const pouleScheduleUpdatedAt = new Date().toISOString();
+      if (updatedFixtures !== fixtures) setFixtures(updatedFixtures);
+      if (currentTeamId) {
+        await setDoc(doc(db, 'teams', currentTeamId, 'state', 'public'), {
+          pouleName: pName, pouleSchedule, pouleScheduleUpdatedAt,
+          ...(updatedFixtures !== fixtures ? { fixtures: updatedFixtures } : {}),
+        }, { merge: true });
+      }
+      setPouleScheduleOpen(true);
+    } catch (e) {
+      setPouleScheduleError('Competitieprogramma ophalen mislukt — controleer de koppeling (mogelijk verlopen sleutel).');
+    } finally {
+      setPouleScheduleBusy(false);
+    }
+  }
+
+  // Zelfde patroon als refreshStandings hierboven, maar dan voor de mijn.lisahockey.nl-
+  // aanwezigheid - ook hier moet de aanroep server-side (Cloud Function), zowel omdat het
+  // gepersonaliseerde token nooit in de client-bundle/netwerklog hoort te staan, als omdat de
+  // browser deze aanroep toch niet zelf mag doen (CORS staat alleen mijn.lisahockey.nl zelf toe).
+  async function refreshAttendance() {
+    if (!currentTeamId) return;
+    setAttendanceBusy(true);
+    setAttendanceError('');
+    try {
+      const call = httpsCallable(functions, 'refreshTeamAttendance');
+      await call({ teamId: currentTeamId });
+    } catch (e) {
+      setAttendanceError(e.message || 'Aanwezigheid ophalen mislukt.');
+    } finally {
+      setAttendanceBusy(false);
     }
   }
 
@@ -898,6 +1345,24 @@ export default function App() {
     setMatch({ ...newMatch, schedule: sched || match.schedule });
   }
 
+  // Anders dan applyInjury hierboven (een reactieve wijziging tijdens de wedstrijd, vandaar
+  // "vanaf kwart"): dit is een vooraf-instelling voor de hele wedstrijd, dus net als de
+  // Speeltijdverdeling/Positietoewijzing-instellingen in Stap 2 wist dit het schema i.p.v. het
+  // meteen te herberekenen - "Schema (opnieuw) maken" verdeelt haar vaste aantal dan over de
+  // hele wedstrijd, niet alleen het resterende deel.
+  function applyFixedBlocks() {
+    if (!fixedBlocksPlayer) return;
+    const n = Math.max(1, Math.min(8, Number(fixedBlocksValue) || 1));
+    patchMatch({ fixedBlocks: { ...match.fixedBlocks, [fixedBlocksPlayer]: n }, schedule: null });
+    setFixedBlocksPlayer('');
+  }
+
+  function clearFixedBlocks(id) {
+    const mb = { ...match.fixedBlocks };
+    delete mb[id];
+    patchMatch({ fixedBlocks: mb, schedule: null });
+  }
+
   // Notitie-vorm: { id, playerId, group, categoryId, categoryLabel, valence, text, quarter, half, createdAt }.
   // categoryLabel wordt bewust mee-opgeslagen (snapshot) zodat een latere hernoeming/verwijdering
   // van de categorie oude aantekeningen niet corrumpeert.
@@ -972,6 +1437,30 @@ export default function App() {
     setMatch(m => ({ ...m, schedule: sched, edited: true }));
   }
 
+  // Eén-klik snelknop op een positiecel om de 1e- en 2e-helft-speelster van dezelfde positie
+  // binnen één kwart om te wisselen (bv. Madeline en Guusje op Voorstopper) - i.t.t. applySwap
+  // hierboven (die via de "+"-dialoog een willekeurige andere speler op één positie zet).
+  // Wisselt A/B overal waar ze in dit kwart voorkomen (elke positie én de bank, in beide
+  // helften), niet alleen op de aangeklikte positie - nodig omdat een van de twee in de 2e helft
+  // vaak naar een ANDERE positie doorschuift i.p.v. naar de bank (de "⇄"-notatie in het schema);
+  // alleen déze ene cel omwisselen zou haar dan dubbel op het veld zetten. Ze wisselen zo in
+  // feite hun hele 2e-kwart-rol, wat verderop in het schema (bv. bij "Laatste man") ook zichtbaar
+  // meeverandert als dat de positie is waar een van hen naartoe doorschuift.
+  function swapPlayersInQuarter(q, idA, idB) {
+    if (readOnly || !idA || !idB || idA === idB) return;
+    const sched = (match.schedule || []).map(x => ({ on: { ...x.on }, bench: x.bench.slice() }));
+    [2 * q, 2 * q + 1].forEach(bi => {
+      const blk = sched[bi];
+      if (!blk) return;
+      Object.keys(blk.on).forEach(k => {
+        if (blk.on[k] === idA) blk.on[k] = idB;
+        else if (blk.on[k] === idB) blk.on[k] = idA;
+      });
+      blk.bench = blk.bench.map(id => id === idA ? idB : id === idB ? idA : id);
+    });
+    setMatch(m => ({ ...m, schedule: sched, edited: true }));
+  }
+
   function generate() {
     if (readOnly) return;
     if (!match.keeperId) { window.alert('Kies eerst een keeper.'); return; }
@@ -1010,6 +1499,7 @@ export default function App() {
   function loadFixture(f) {
     if (readOnly) return;
     setTab('wedstrijd');
+    setScoreEditUnlocked(false);
     if (f.savedMatch) {
       setMatch({ ...f.savedMatch, fixtureId: f.id, opponent: f.opponent, date: f.date });
     } else {
@@ -1019,6 +1509,26 @@ export default function App() {
         schedule: null, injuries: {}, locked: false, notes: []
       });
     }
+  }
+
+  // Zet een al afgesloten wedstrijd terug in wedstrijdmodus om het scoreverloop achteraf te
+  // corrigeren (Wedstrijdverslagen - "Heropen") - i.t.t. reopenMatch hierboven (die alleen het
+  // schema/de selectie ontgrendelt) herstelt dit ook goalLog/liveUs/liveThem uit de bewaarde
+  // kopie op de fixture (f.report/f.gf/f.ga, zie endMatch), want savedMatch zelf is een
+  // momentopname van vóór de wedstrijd (dus van vóór "Start wedstrijd" werd aangevinkt) en bevat
+  // dus geen scoreverloop, en ook geen liveOpened:true - zonder dat expliciet hier terug te
+  // zetten valt de hele live-sectie (incl. de bewerkdialoog) terug in zijn "wedstrijd nog niet
+  // gestart"-weergave: uitgegrijsd en niet-klikbaar (opacity/pointer-events, zie hieronder bij
+  // matchModeContent).
+  function reopenMatchForEditing(fixtureId) {
+    if (!isMyTeam) return;
+    const f = fixtures.find(x => x.id === fixtureId);
+    if (!f) return;
+    loadFixture(f);
+    const liveUs = f.home ? Number(f.gf || 0) : Number(f.ga || 0);
+    const liveThem = f.home ? Number(f.ga || 0) : Number(f.gf || 0);
+    patchMatch({ goalLog: f.report || [], liveUs, liveThem, liveEnded: true, liveOpened: true, fixtureId: f.id, opponent: f.opponent, date: f.date });
+    setMatchMode(true);
   }
 
   function addPlayer() {
@@ -1033,7 +1543,7 @@ export default function App() {
 
   function openAddFixture() {
     if (readOnly) return;
-    setAddFixtureForm({ date: '', time: '', opponent: '', home: true });
+    setAddFixtureForm({ date: '', time: '', opponent: '', home: true, veld: '' });
     setAddFixtureError('');
     setAddFixtureOpen(true);
   }
@@ -1046,7 +1556,7 @@ export default function App() {
     const f = addFixtureForm;
     if (!f.date || !f.opponent.trim()) { setAddFixtureError('Vul in elk geval datum en tegenstander in.'); return; }
     setFixtures(fs => fs.concat([{
-      id: 'f' + Date.now(), date: f.date, time: f.time, opponent: f.opponent.trim(), home: f.home, friendly: true
+      id: 'f' + Date.now(), date: f.date, time: f.time, opponent: f.opponent.trim(), home: f.home, friendly: true, veld: f.veld.trim()
     }]));
     setAddFixtureOpen(false);
   }
@@ -1059,6 +1569,9 @@ export default function App() {
   // ---- derived values (mirrors the original renderVals) ----
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
+  // Voor de doelpuntmelding (banner/spraak/pushmelding) willen we alleen de clubnaam ("HCRB"),
+  // niet de volledige teamnaam ("HCRB MO18-2") - zie clubOnly hierboven.
+  const clubName = clubOnly(ownTeamName);
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : teams.filter(t => myTeams && myTeams[t.id]);
@@ -1077,7 +1590,7 @@ export default function App() {
   // accessGate tonen.
   const limitedNav = !!user && !isMyTeam;
   const tabs = [
-    ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
+    ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['push', 'Push meldingen'], ['sc', 'Strafcorner'],
     ['notities', 'Notities'], ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     // Live: verschijnt voor IEDEREEN die dit team heeft geselecteerd (ook uitgelogd) zodra de
     // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
@@ -1147,9 +1660,26 @@ export default function App() {
   };
 
   const sel = m.selected || [];
+  // Aanwezigheid (mijn.lisahockey.nl) voor de huidige wedstrijd, zelfde datum+tegenstander-
+  // sleutel als importLisaMatches/refreshTeamAttendance gebruiken. Naam-matching is
+  // best-effort (exacte, hoofdletterongevoelige match op voor- + achternaam) - een speler die
+  // niet matcht krijgt gewoon geen kleurindicator, net als een wedstrijd die (nog) niet in de
+  // cache zit.
+  const currentFixtureForAttendance = fixtures.find(f => f.id === m.fixtureId);
+  const attendanceForMatch = currentFixtureForAttendance && attendance && attendance.byFixtureKey
+    ? attendance.byFixtureKey[currentFixtureForAttendance.date + '|' + currentFixtureForAttendance.opponent]
+    : null;
+  const ATTENDANCE_COLOR = { present: '#22e600', unknown: '#ffee00', absent: '#ff0033' };
+  const attendanceStatusFor = p => {
+    if (!attendanceForMatch) return null;
+    const fullName = (p.first + ' ' + p.last).trim().toLowerCase();
+    const hit = attendanceForMatch.persons.find(x => (x.name || '').trim().toLowerCase() === fullName);
+    return hit ? hit.status : null;
+  };
   const selectionChips = players.map(p => {
     const on = sel.indexOf(p.id) >= 0;
     const isK = m.keeperId === p.id;
+    const attColor = ATTENDANCE_COLOR[attendanceStatusFor(p)];
     return {
       key: p.id,
       label: isK ? displayFirst(p) + ' · keep' : displayFirst(p),
@@ -1163,6 +1693,7 @@ export default function App() {
           : on
             ? 'background:var(--color-accent-700);color:#fff;border:1px solid var(--color-accent-700)'
             : 'background:transparent;color:var(--color-neutral-700);border:1px solid var(--color-neutral-400)')
+        + (attColor ? `;padding-bottom:2px;box-shadow:inset 0 -5px 0 ${attColor}` : '')
     };
   });
 
@@ -1249,6 +1780,10 @@ export default function App() {
           noteBadge: badgeFor(pa),
           onNoteB: (readOnly || !swap || !pb) ? undefined : () => openNoteEditor(pb, q, 1),
           noteBadgeB: swap ? badgeFor(pb) : null,
+          // Snelknop om deze twee (1e/2e helft op dezelfde positie) om te wisselen - zie
+          // swapPlayersInQuarter hierboven voor hoe dat ook het geval afhandelt waarin een van
+          // beiden naar een andere positie doorschuift i.p.v. naar de bank.
+          onSwapHalves: (readOnly || !swap || !pa || !pb) ? undefined : () => swapPlayersInQuarter(q, pa, pb),
           style: CELL + 'cursor:pointer;border:1px solid transparent;'
             + (startedNew ? 'background:' + C_IN_BG : startedMoved ? 'background:' + C_MOVE_BG : 'background:var(--color-neutral-200)'),
           nameAStyle: 'font-size:16px;line-height:1.2;font-weight:500;'
@@ -1339,6 +1874,13 @@ export default function App() {
     clear: () => clearInjury(id)
   }));
 
+  const fixedBlocksOptions = selectedPlayers().filter(p => p.id !== m.keeperId && (m.fixedBlocks || {})[p.id] == null).map(p => ({ id: p.id, label: displayFirst(p) }));
+  const fixedBlocksList = Object.keys(m.fixedBlocks || {}).map(id => ({
+    key: id,
+    label: nameOf(id) + ' ' + m.fixedBlocks[id] + ' speelblok' + (m.fixedBlocks[id] === 1 ? '' : 'ken') + ' — klik om te verwijderen',
+    clear: () => clearFixedBlocks(id)
+  }));
+
   const matchNoteChips = (m.notes || []).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(n => ({
     key: n.id,
     valence: n.valence,
@@ -1346,7 +1888,11 @@ export default function App() {
     edit: () => openNoteEditorForEdit(n)
   }));
 
-  const fitOf = (p, pos) => p && p.prefs[pos] ? 'voorkeur ' + p.prefs[pos] + ' op deze plek' : 'speelt hier normaal niet';
+  const fitOf = (p, pos) => {
+    if (!p) return 'speelt hier normaal niet';
+    if (p.avoid && p.avoid[pos]) return 'verboden op deze positie';
+    return p.prefs[pos] ? 'voorkeur ' + p.prefs[pos] + ' op deze plek' : 'speelt hier normaal niet';
+  };
   let editor = null;
   if (sched && editing && sched[2 * editing.q + editing.half]) {
     const ed = editing;
@@ -1356,7 +1902,7 @@ export default function App() {
     const cands = [];
     blk.bench.forEach(id => cands.push({ id, from: null }));
     Object.keys(blk.on).forEach(k => { if (k !== ed.pos && blk.on[k]) cands.push({ id: blk.on[k], from: k }); });
-    const rank = c => { const p = byId(c.id); return p && p.prefs[ed.pos] ? p.prefs[ed.pos] : 9; };
+    const rank = c => { const p = byId(c.id); if (p && p.avoid && p.avoid[ed.pos]) return 10; return p && p.prefs[ed.pos] ? p.prefs[ed.pos] : 9; };
     cands.sort((a, b2) => rank(a) - rank(b2) || (ratingOf(byId(b2.id)) - ratingOf(byId(a.id))));
     editor = {
       title: (ed.q + 1) + 'e kwart · ' + PMAP[ed.pos].label,
@@ -1404,7 +1950,7 @@ export default function App() {
         slots.push({ b, h, pos: k, occ });
       });
     });
-    const myRank = s => p && p.prefs[s.pos] ? p.prefs[s.pos] : 9;
+    const myRank = s => { if (p && p.avoid && p.avoid[s.pos]) return 10; return p && p.prefs[s.pos] ? p.prefs[s.pos] : 9; };
     const hurt = s => s.occ.prefs[s.pos] ? s.occ.prefs[s.pos] : 9;
     slots.sort((a, b2) => myRank(a) - myRank(b2) || hurt(b2) - hurt(a));
     relocator = {
@@ -1478,17 +2024,35 @@ export default function App() {
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
     dp: String(p.dp || 0),
     onDp: e => { if (readOnly) return; const v = Math.max(0, Number(e.target.value) || 0); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, dp: v } : x)); },
+    ap: String(p.ap || 0),
+    onAp: e => { if (readOnly) return; const v = Math.max(0, Number(e.target.value) || 0); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, ap: v } : x)); },
     subLabel: p.sub ? 'Invaller' : 'Vast',
     onToggleSub: () => { if (readOnly) return; setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, sub: !x.sub } : x)); },
     cells: POS.map(pos => ({
       key: pos.k,
       value: p.prefs[pos.k] ? String(p.prefs[pos.k]) : '',
+      forbidden: !!(p.avoid && p.avoid[pos.k]),
       onChange: e => {
         if (readOnly) return;
         const raw = e.target.value;
         const prefs = { ...p.prefs };
         if (raw === '' || Number(raw) <= 0) delete prefs[pos.k]; else prefs[pos.k] = Number(raw);
         setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, prefs } : x));
+      },
+      onToggleForbidden: () => {
+        if (readOnly) return;
+        setPlayers(ps => ps.map(x => {
+          if (x.id !== p.id) return x;
+          const avoid = { ...(x.avoid || {}) };
+          if (avoid[pos.k]) {
+            delete avoid[pos.k];
+            return { ...x, avoid };
+          }
+          const prefs = { ...x.prefs };
+          delete prefs[pos.k];
+          avoid[pos.k] = true;
+          return { ...x, avoid, prefs };
+        }));
       }
     })),
     fixedKeeper: !!p.fixedKeeper,
@@ -1749,7 +2313,6 @@ export default function App() {
   const fixturesSorted = fixtures.slice().sort((a, b) => (a.date || '9') < (b.date || '9') ? -1 : 1);
   const fixtureRows = fixturesSorted.map(f => {
     const upd = obj => { if (!readOnly) setFixtures(fs => fs.map(x => x.id === f.id ? { ...x, ...obj } : x)); };
-    const d = f.date ? new Date(f.date + 'T12:00:00') : null;
     const homeName = f.home ? ownTeamName : (f.opponent || 'tegenstander ?');
     const awayName = f.home ? (f.opponent || 'tegenstander ?') : ownTeamName;
     const played = f.gf !== '' && f.gf != null && f.ga !== '' && f.ga != null;
@@ -1762,7 +2325,13 @@ export default function App() {
       key: f.id,
       date: f.date, time: f.time, opponent: f.opponent, home: !!f.home,
       verzameltijd: f.verzameltijd || '',
-      day: d && !isNaN(d) ? DAGEN[d.getDay()] : '—',
+      // Veldnummer: voor een oefenwedstrijd handmatig ingevuld (bij toevoegen, of hieronder in
+      // de tabel); voor een echte competitiewedstrijd gevuld door refreshTeamAttendance() via
+      // de mijn.lisahockey.nl-koppeling (zelfde datum+tegenstander-sleutel), die 'm rechtstreeks
+      // in state/public.fixtures wegschrijft (i.p.v. alleen in de team-only aanwezigheidscache),
+      // zodat dit voor iedereen zichtbaar is - niet alleen teamleden.
+      veld: f.veld || '',
+      onVeld: e => upd({ veld: e.target.value }),
       homeName, awayName,
       homeStyle: f.home ? 'color:var(--color-accent-700);font-weight:600' : 'color:var(--color-text)',
       awayStyle: !f.home ? 'color:var(--color-accent-700);font-weight:600' : 'color:var(--color-text)',
@@ -1898,6 +2467,14 @@ export default function App() {
     : activeClock.remainingMs;
   const timerAlertActive = !alertDismissedByQuarter[activeClockKey] && timerRemainingMs <= TIMER_ALERT_REMAINING_MS;
 
+  // Wisselsignaal (geluid) - speelt op precies hetzelfde moment als de "Bijna halverwege"-tekst
+  // hierboven verschijnt, dus alleen bij de coach zelf (matchMode && isMyTeam, net als die tekst
+  // alleen daar rendert) - dit is dezelfde sideline-cue, niet iets voor ouders/toeschouwers op
+  // een andere pagina. wisselSignaalRef.current wordt maar één keer aangemaakt; prevAlertRef
+  // zorgt dat het geluid alleen bij de false->true-overgang afspeelt, niet steeds opnieuw zolang
+  // de waarschuwing actief blijft staan.
+  const wisselSignaalActive = matchMode && isMyTeam && timerAlertActive;
+
   // Tikt elke 250ms door zolang de actieve klok loopt, puur om timerNow te verversen — de
   // daadwerkelijke resterende tijd wordt berekend uit endAt (een tijdstip), niet opgeteld in
   // stapjes. Moet voor IEDERE kijker lopen (niet alleen de coach), anders tikt de klok bij
@@ -1916,6 +2493,82 @@ export default function App() {
       patchMatch({ clocks: { ...(m.clocks || {}), [activeClockKey]: { running: false, endAt: null, remainingMs: 0 } } });
     }
   }, [isMyTeam, activeClock.running, timerRemainingMs, activeClockKey]);
+
+  useEffect(() => {
+    if (!wisselSignaalAudioRef.current) {
+      wisselSignaalAudioRef.current = new Audio('/wisselsignaal.m4a');
+      wisselSignaalAudioRef.current.loop = true;
+    }
+    const audio = wisselSignaalAudioRef.current;
+    if (wisselSignaalActive) {
+      // loop:true laat 'm vanzelf achter elkaar herhalen - alleen bij de false->true-overgang
+      // hoeven we 'm expliciet te (her)starten.
+      if (!wisselSignaalWasActiveRef.current) {
+        // Route het element eenmalig door een GainNode om 'm boven het normale volumeplafond
+        // (1.0) uit te versterken - createMediaElementSource mag maar één keer per element,
+        // vandaar de guard op wisselGainRef.current.
+        const ctx = ensureAudioCtx();
+        if (ctx && !wisselGainRef.current) {
+          try {
+            const source = ctx.createMediaElementSource(audio);
+            const gain = ctx.createGain();
+            gain.gain.value = WISSEL_SIGNAL_GAIN;
+            source.connect(gain).connect(ctx.destination);
+            wisselGainRef.current = gain;
+          } catch { /* Web Audio niet beschikbaar - speelt dan gewoon op normaal volume af */ }
+        }
+        audio.currentTime = 0;
+        audio.play().catch(() => { /* autoplay geblokkeerd - de tekst blijft sowieso zichtbaar */ });
+      }
+    } else if (wisselSignaalWasActiveRef.current) {
+      // Stopt meteen zodra de melding wegvalt - via "Zet uit", een nieuw kwart, of Reset van de klok.
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    wisselSignaalWasActiveRef.current = wisselSignaalActive;
+  }, [wisselSignaalActive]);
+
+  // Hard eindsignaal zodra de kwartklok op 0 komt - eenmalig bij de false->true-overgang (geen
+  // loop, in tegenstelling tot het wisselsignaal: het kwart is dan gewoon voorbij).
+  const quarterEndActive = matchMode && isMyTeam && timerRemainingMs <= 0 && activeClock.remainingMs !== TIMER_TOTAL_MS;
+  useEffect(() => {
+    if (quarterEndActive && !quarterEndWasActiveRef.current) playQuarterEndBuzzer();
+    quarterEndWasActiveRef.current = quarterEndActive;
+  }, [quarterEndActive]);
+
+  // Doelpunt-melding (eigen én tegen) - gesproken aankondiging + banner, voor IEDEREEN die deze
+  // wedstrijd open heeft staan (coach én ouders/toeschouwers - m.goalLog komt voor iedereen via
+  // dezelfde publieke Firestore-sync binnen, zie de "Publieke teamdata"-listener hierboven), op
+  // elk tabblad (de banner zelf staat buiten de tab-content, zie het JSX verderop).
+  useEffect(() => {
+    const usEntries = (m.goalLog || []).filter(e => e.team === 'us');
+    const themEntries = (m.goalLog || []).filter(e => e.team === 'them');
+    const usCount = usEntries.length;
+    const themCount = themEntries.length;
+    if (goalToastFixtureKeyRef.current !== m.fixtureId) {
+      // Andere wedstrijd geopend (of eerste keer geladen) - alleen de tellers resetten, niet
+      // meteen melden voor doelpunten die al eerder gescoord waren.
+      goalToastFixtureKeyRef.current = m.fixtureId;
+      prevUsGoalCountRef.current = usCount;
+      prevThemGoalCountRef.current = themCount;
+      return;
+    }
+    if (prevUsGoalCountRef.current != null && usCount > prevUsGoalCountRef.current) {
+      const latest = usEntries[usEntries.length - 1];
+      const phrase = buildGoalAnnouncement(latest.scorerName || clubName, latest.minute, latest.assistName || null, latest.atUs, latest.atThem);
+      setGoalToast({ kind: 'us', text: phrase });
+      if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
+      goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
+    } else if (prevThemGoalCountRef.current != null && themCount > prevThemGoalCountRef.current) {
+      const latest = themEntries[themEntries.length - 1];
+      const phrase = buildAgainstAnnouncement(latest.minute, latest.atUs, latest.atThem);
+      setGoalToast({ kind: 'them', text: phrase });
+      if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
+      goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
+    }
+    prevUsGoalCountRef.current = usCount;
+    prevThemGoalCountRef.current = themCount;
+  }, [m.goalLog, m.fixtureId]);
 
   function timerStart() {
     const slot = (m.clocks || {})[activeClockKey] || DEFAULT_CLOCK;
@@ -2090,7 +2743,7 @@ export default function App() {
         {h.rows.map(row => (
           <div key={row.key} style={css('display:flex;justify-content:center;gap:6px')}>
             {row.cells.map(cell => (
-              <div key={cell.key} data-poscell="1" style={css(cell.style + 'position:relative')}>
+              <div key={cell.key} data-poscell="1" style={css(cell.style + ';position:relative')}>
                 <div style={css('font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);display:flex;align-items:center;justify-content:center;gap:4px')}>
                   <span>{cell.pos}</span>
                   {cell.onNote && (
@@ -2101,6 +2754,13 @@ export default function App() {
                 </div>
                 <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
                 <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
+                {cell.onSwapHalves && (
+                  <button type="button" data-noprint="1" aria-label={`${cell.pos} — 1e en 2e helft wisselen`} title="1e en 2e helft wisselen (schuift een van beiden ergens anders door, dan verandert die andere positie ook mee)"
+                    onClick={e => { e.stopPropagation(); cell.onSwapHalves(); }}
+                    style={css('width:22px;height:22px;min-width:22px;border-radius:50%;border:1px solid var(--color-neutral-400);background:var(--color-neutral-100);color:var(--color-neutral-700);padding:2px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;position:absolute;right:-4px;top:50%;transform:translateY(-50%)')}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={ICON_SWAP_VERT} /></svg>
+                  </button>
+                )}
                 {cell.onNoteB && (
                   <button type="button" data-noprint="1" aria-label={`Notitie — ${cell.nameB}`}
                     onClick={e => { e.stopPropagation(); cell.onNoteB(); }}
@@ -2156,45 +2816,148 @@ export default function App() {
   // Alle drie nemen de minuut als expliciete parameter aan (i.p.v. 'm zelf te berekenen) - de
   // dialogen zetten 'm bij het openen op de huidige verstreken tijd, maar de coach kan 'm
   // aanpassen (bv. een doelpunt dat pas 5 minuten later wordt ingevoerd).
+  //
+  // Sorteert het scoreverloop op minuut (stabiel: gelijke minuten behouden hun invoervolgorde,
+  // zie ook de vier "1e minuut"-regels in de screenshots) en herberekent daarna de tussenstand
+  // (atUs/atThem) per doelpunt-regel opnieuw door 'm chronologisch af te lopen. Nodig zodra een
+  // correctie achteraf (bv. een gemist doelpunt op een eerdere minuut alsnog toevoegen, of een
+  // regel verwijderen) de oorspronkelijke invoervolgorde doorbreekt - anders zou zowel de
+  // volgorde als de getoonde tussenstand bij latere regels niet meer kloppen. Notitieregels
+  // ('note') hebben geen tussenstand en blijven ongemoeid, op hun sortering na.
+  function reorderGoalLog(log) {
+    const sorted = log.slice().sort((a, b) => a.minute - b.minute);
+    let us = 0, them = 0;
+    return sorted.map(e => {
+      if (e.team === 'us') { us++; return { ...e, atUs: us, atThem: them }; }
+      if (e.team === 'them') { them++; return { ...e, atUs: us, atThem: them }; }
+      return e;
+    });
+  }
   function logGoalThem(minute) {
     const newThem = (m.liveThem || 0) + 1;
-    patchMatch({ liveThem: newThem, goalLog: [...(m.goalLog || []), { team: 'them', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), atUs: m.liveUs || 0, atThem: newThem }] });
+    const newLog = reorderGoalLog([...(m.goalLog || []), { team: 'them', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()) }]);
+    patchMatch({ liveThem: newThem, goalLog: newLog });
+    syncEndedMatchToFixture(newLog, m.liveUs || 0, newThem);
     setThemGoalDialog(false);
   }
-  function logGoalUs(player, remark, minute) {
+  function logGoalUs(player, remark, minute, assistPlayer) {
     const newUs = (m.liveUs || 0) + 1;
-    const entry = { team: 'us', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), scorerId: player.id, scorerName: displayFirst(player), atUs: newUs, atThem: m.liveThem || 0 };
+    const entry = { team: 'us', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), scorerId: player.id, scorerName: displayFirst(player) };
     if (remark && remark.trim()) entry.remark = remark.trim();
-    patchMatch({ liveUs: newUs, goalLog: [...(m.goalLog || []), entry] });
-    setPlayers(ps => ps.map(x => x.id === player.id ? { ...x, dp: (x.dp || 0) + 1 } : x));
+    if (assistPlayer) { entry.assistId = assistPlayer.id; entry.assistName = displayFirst(assistPlayer); }
+    const newLog = reorderGoalLog([...(m.goalLog || []), entry]);
+    patchMatch({ liveUs: newUs, goalLog: newLog });
+    setPlayers(ps => ps.map(x => {
+      if (x.id === player.id) return { ...x, dp: (x.dp || 0) + 1 };
+      if (assistPlayer && x.id === assistPlayer.id) return { ...x, ap: (x.ap || 0) + 1 };
+      return x;
+    }));
+    syncEndedMatchToFixture(newLog, newUs, m.liveThem || 0);
     setScorerPicker(false);
     setScorerSelected(null);
+    setAssistSelected(null);
     setGoalRemark('');
   }
   function logNote(text, minute) {
     if (!text || !text.trim()) return;
-    patchMatch({ goalLog: [...(m.goalLog || []), { team: 'note', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), text: text.trim() }] });
+    const newLog = reorderGoalLog([...(m.goalLog || []), { team: 'note', minute: Math.max(1, Number(minute) || elapsedMatchMinutes()), text: text.trim() }]);
+    patchMatch({ goalLog: newLog });
+    syncEndedMatchToFixture(newLog, m.liveUs || 0, m.liveThem || 0);
     setCommentText('');
     setCommentDialog(false);
   }
+  // Zodra de wedstrijd al is afgesloten (endMatch) leeft de "officiële" eindstand/verslag alleen
+  // nog op de fixture zelf (f.report/f.gf/f.ga - zie endMatch), niet meer op m: Wedstrijdverslagen
+  // en Programma lezen daar rechtstreeks uit. Een correctie ná het afsluiten (via dezelfde
+  // Scoreverloop-bewerkdialoog, zie editEntryIdx) moet die kopie dus opnieuw bijwerken, anders
+  // blijft de foute stand/naam daar gewoon staan. Neemt newLog/newLiveUs/newLiveThem als losse
+  // argumenten (i.p.v. de net-gepatchte m te lezen) omdat setMatch/patchMatch niet synchroon is.
+  function syncEndedMatchToFixture(newLog, newLiveUs, newLiveThem) {
+    if (!m.liveEnded || !scoreFxObj) return;
+    setFixtures(fs => fs.map(f => f.id === scoreFxObj.id
+      ? { ...f, gf: String(f.home ? newLiveUs : newLiveThem), ga: String(f.home ? newLiveThem : newLiveUs), report: newLog }
+      : f));
+  }
   // Verwijdert één specifieke logregel (op index, dus altijd de actuele m.goalLog op het moment
   // van klikken) en trekt score/DP weer terug - gebruikt door zowel de snelle "−" (laatste van
-  // dit team) als het bewerken/verwijderen van een willekeurige regel in het scoreverloop.
+  // dit team) als het bewerken/verwijderen van een willekeurige regel in het scoreverloop, tijdens
+  // de wedstrijd én (zie syncEndedMatchToFixture hierboven) achteraf.
   function removeLogEntry(idx) {
     const log = m.goalLog || [];
     const entry = log[idx];
     if (!entry) return;
-    const newLog = log.slice(0, idx).concat(log.slice(idx + 1));
+    const newLog = reorderGoalLog(log.slice(0, idx).concat(log.slice(idx + 1)));
+    const newLiveUs = entry.team === 'us' ? Math.max(0, (m.liveUs || 0) - 1) : (m.liveUs || 0);
+    const newLiveThem = entry.team === 'them' ? Math.max(0, (m.liveThem || 0) - 1) : (m.liveThem || 0);
     const patch = { goalLog: newLog };
-    if (entry.team === 'us') patch.liveUs = Math.max(0, (m.liveUs || 0) - 1);
-    else if (entry.team === 'them') patch.liveThem = Math.max(0, (m.liveThem || 0) - 1);
+    if (entry.team === 'us') patch.liveUs = newLiveUs;
+    else if (entry.team === 'them') patch.liveThem = newLiveThem;
     patchMatch(patch);
-    if (entry.team === 'us' && entry.scorerId) {
-      setPlayers(ps => ps.map(x => x.id === entry.scorerId ? { ...x, dp: Math.max(0, (x.dp || 0) - 1) } : x));
+    if (entry.team === 'us' && (entry.scorerId || entry.assistId)) {
+      setPlayers(ps => ps.map(x => {
+        if (x.id === entry.scorerId) return { ...x, dp: Math.max(0, (x.dp || 0) - 1) };
+        if (x.id === entry.assistId) return { ...x, ap: Math.max(0, (x.ap || 0) - 1) };
+        return x;
+      }));
     }
+    syncEndedMatchToFixture(newLog, newLiveUs, newLiveThem);
   }
+  // changes mag ook scorerId/scorerName en/of assistId/assistName bevatten (bij een eigen
+  // doelpunt) om de schutter en/of assistgeefster te wisselen - past dan ook de DP/AP-telling
+  // (Team-tab) aan: -1 bij de oude, +1 bij de nieuwe, zodat een verkeerd geselecteerde speelster
+  // gecorrigeerd kan worden zonder dat de seizoenstelling scheeftrekt. 'scorerId'/'assistId' in
+  // changes (i.p.v. een truthy-check) omdat een assist ook expliciet leeggemaakt kan worden
+  // (changes.assistId dan undefined, zie de bewerkdialoog).
   function updateLogEntry(idx, changes) {
-    patchMatch({ goalLog: (m.goalLog || []).map((e, i) => i === idx ? { ...e, ...changes } : e) });
+    const log = m.goalLog || [];
+    const entry = log[idx];
+    if (!entry) return;
+    const newLog = reorderGoalLog(log.map((e, i) => {
+      if (i !== idx) return e;
+      const merged = { ...e, ...changes };
+      // Firestore staat geen undefined-veldwaarden toe (setDoc/updateDoc gooien dan een
+      // synchrone fout, die verderop een wit scherm gaf) - een leeggemaakte opmerking of assist
+      // (zie "|| undefined"/changes.assistId = undefined elders) moet het veld dus echt
+      // verwijderen i.p.v. op undefined zetten.
+      Object.keys(merged).forEach(k => { if (merged[k] === undefined) delete merged[k]; });
+      return merged;
+    }));
+    patchMatch({ goalLog: newLog });
+    if ('scorerId' in changes || 'assistId' in changes) {
+      const oldScorerId = entry.scorerId, newScorerId = 'scorerId' in changes ? changes.scorerId : oldScorerId;
+      const oldAssistId = entry.assistId, newAssistId = 'assistId' in changes ? changes.assistId : oldAssistId;
+      setPlayers(ps => ps.map(p => {
+        let dp = p.dp || 0, ap = p.ap || 0, changed = false;
+        if (oldScorerId !== newScorerId) {
+          if (p.id === oldScorerId) { dp = Math.max(0, dp - 1); changed = true; }
+          if (p.id === newScorerId) { dp = dp + 1; changed = true; }
+        }
+        if (oldAssistId !== newAssistId) {
+          if (p.id === oldAssistId) { ap = Math.max(0, ap - 1); changed = true; }
+          if (p.id === newAssistId) { ap = ap + 1; changed = true; }
+        }
+        return changed ? { ...p, dp, ap } : p;
+      }));
+    }
+    syncEndedMatchToFixture(newLog, m.liveUs || 0, m.liveThem || 0);
+  }
+  // Net als removeLogEntry, maar voor de hele stand in één keer - trekt voor elke eigen speler
+  // evenveel DP/AP terug als ze in het (nu te wissen) logboek stonden, in plaats van de score/log
+  // leeg te maken zonder de DP/AP-telling mee terug te draaien.
+  function resetLiveScore() {
+    if (readOnly) return;
+    const scorers = {}, assisters = {};
+    (m.goalLog || []).forEach(e => {
+      if (e.team !== 'us') return;
+      if (e.scorerId) scorers[e.scorerId] = (scorers[e.scorerId] || 0) + 1;
+      if (e.assistId) assisters[e.assistId] = (assisters[e.assistId] || 0) + 1;
+    });
+    if (Object.keys(scorers).length || Object.keys(assisters).length) {
+      setPlayers(ps => ps.map(x => (scorers[x.id] || assisters[x.id])
+        ? { ...x, dp: Math.max(0, (x.dp || 0) - (scorers[x.id] || 0)), ap: Math.max(0, (x.ap || 0) - (assisters[x.id] || 0)) }
+        : x));
+    }
+    patchMatch({ liveUs: 0, liveThem: 0, goalLog: [] });
   }
   // Eén gedeelde tekst-opmaak voor een logregel (doelpunt of commentaar), zodat zowel de
   // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
@@ -2205,7 +2968,7 @@ export default function App() {
     const first = home ? g.atUs : g.atThem;
     const second = home ? g.atThem : g.atUs;
     if (g.team === 'us') {
-      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
+      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + (g.assistName ? ' (assist: ' + g.assistName + ')' : '') + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
     }
     return g.minute + 'e minuut: ' + opponentName + ' scoort — ' + first + '–' + second;
   }
@@ -2299,7 +3062,13 @@ export default function App() {
             <div style={css('display:flex;align-items:baseline;justify-content:space-between')}>
               <span style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700)')}>Live stand{m.liveEnded ? ' (afgesloten)' : ''}</span>
               {!m.liveEnded && (
-                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={() => patchMatch({ liveUs: 0, liveThem: 0, goalLog: [] })}>Reset</button>
+                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={resetLiveScore}>Reset</button>
+              )}
+              {/* Extra drempel vóórdat de +/- knoppen hieronder (bv. via "Heropen" in
+                  Wedstrijdverslagen) een al vastgelegde eindstand kunnen wijzigen - zie
+                  scoreEditUnlocked hierboven. */}
+              {m.liveEnded && !scoreEditUnlocked && (
+                <button type="button" className="btn btn-ghost" style={css('padding:2px 4px;font-size:13px')} onClick={() => setScoreEditUnlocked(true)}>Eindstand wijzigen</button>
               )}
             </div>
             <div style={css('display:flex;align-items:center;justify-content:space-around;gap:var(--space-3)')}>
@@ -2307,13 +3076,21 @@ export default function App() {
                 <div key={c.key} style={css('display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0')}>
                   <span style={css('font-size:13px;font-weight:600;text-align:center;text-wrap:pretty')}>{c.name}</span>
                   <div style={css('display:flex;align-items:center;gap:10px')}>
-                    {!m.liveEnded && (
-                      <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')} onClick={() => undoLastGoal(c.isUs ? 'us' : 'them')}>−</button>
+                    {/* Ook ná het afsluiten (m.liveEnded) bruikbaar - bv. via "Heropen" in
+                        Wedstrijdverslagen - om een achteraf onjuist gebleken eindstand te kunnen
+                        corrigeren (mits scoreEditUnlocked, zie hierboven); zie
+                        syncEndedMatchToFixture in undoLastGoal/logGoalUs/logGoalThem voor het
+                        doorzetten naar de bewaarde fixture-kopie. */}
+                    {(!m.liveEnded || scoreEditUnlocked) && (
+                      <>
+                        <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')} onClick={() => undoLastGoal(c.isUs ? 'us' : 'them')}>−</button>
+                        <span style={css('font-family:var(--font-heading);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;min-width:32px;text-align:center')}>{(c.isUs ? m.liveUs : m.liveThem) || 0}</span>
+                        <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')}
+                          onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); if (c.isUs) { setGoalRemark(''); setScorerSelected(null); setScorerPicker(true); } else { setThemGoalDialog(true); } }}>+</button>
+                      </>
                     )}
-                    <span style={css('font-family:var(--font-heading);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;min-width:32px;text-align:center')}>{(c.isUs ? m.liveUs : m.liveThem) || 0}</span>
-                    {!m.liveEnded && (
-                      <button type="button" className="btn btn-secondary" style={css('width:36px;height:36px;padding:0;font-size:18px;line-height:1')}
-                        onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); if (c.isUs) { setGoalRemark(''); setScorerSelected(null); setScorerPicker(true); } else { setThemGoalDialog(true); } }}>+</button>
+                    {m.liveEnded && !scoreEditUnlocked && (
+                      <span style={css('font-family:var(--font-heading);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;min-width:32px;text-align:center')}>{(c.isUs ? m.liveUs : m.liveThem) || 0}</span>
                     )}
                   </div>
                 </div>
@@ -2322,23 +3099,40 @@ export default function App() {
           </div>
 
           {scorerPicker && (
-            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setScorerPicker(false); setScorerSelected(null); setGoalRemark(''); }}>
-              <div className="dialog elev-lg" style={css('max-width:360px;width:100%;max-height:80vh;overflow:hidden;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
+            <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => { setScorerPicker(false); setScorerSelected(null); setAssistSelected(null); setGoalRemark(''); }}>
+              <div className="dialog elev-lg" style={css('max-width:480px;width:100%;max-height:85vh;overflow:hidden;padding:var(--space-4)')} onClick={e => e.stopPropagation()}>
                 <div className="dialog-title" style={css('font-family:var(--font-heading);font-size:20px')}>Wie scoorde?</div>
-                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:5px;overflow-y:auto;min-height:0;flex:1')}>
+                <div className="dialog-body" style={css('display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0;flex:1')}>
                   <label style={css('display:flex;align-items:center;gap:8px;font-size:14px;color:var(--color-neutral-700)')}>
                     Minuut
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
-                  {scorerOptions.map(p => (
-                    <button key={p.id} type="button" className={scorerSelected === p.id ? 'btn btn-primary' : 'btn btn-secondary'} style={css('justify-content:flex-start')} onClick={() => setScorerSelected(p.id)}>{displayFirst(p)}</button>
-                  ))}
+                  <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('min-height:50px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
                   {!scorerOptions.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Geen speelsters geselecteerd voor deze wedstrijd.</p>}
-                  <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('margin-top:8px;min-height:60px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
+                  {/* Twee kolommen naast elkaar: links de schutter kiezen, rechts (optioneel) de
+                      assist. Zodra iemand als schutter is gekozen verdwijnt haar naam uit de
+                      assist-kolom (je kan niet je eigen doelpunt assisten). Nogmaals klikken op de
+                      al-gekozen assist zet 'm weer uit - een assist is nooit verplicht. */}
+                  <div style={css('display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-top:2px')}>
+                    <div style={css('display:flex;flex-direction:column;gap:4px;min-width:0')}>
+                      <span style={css('font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--color-neutral-700)')}>Doelpunt</span>
+                      {scorerOptions.map(p => (
+                        <button key={p.id} type="button" className={scorerSelected === p.id ? 'btn btn-primary' : 'btn btn-secondary'} style={css('justify-content:flex-start;padding:6px 8px;font-size:14px')}
+                          onClick={() => { setScorerSelected(p.id); setAssistSelected(a => a === p.id ? null : a); }}>{displayFirst(p)}</button>
+                      ))}
+                    </div>
+                    <div style={css('display:flex;flex-direction:column;gap:4px;min-width:0')}>
+                      <span style={css('font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--color-neutral-700)')}>Assist (optioneel)</span>
+                      {scorerOptions.filter(p => p.id !== scorerSelected).map(p => (
+                        <button key={p.id} type="button" className={assistSelected === p.id ? 'btn btn-primary' : 'btn btn-secondary'} style={css('justify-content:flex-start;padding:6px 8px;font-size:14px')}
+                          onClick={() => setAssistSelected(a => a === p.id ? null : p.id)}>{displayFirst(p)}</button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 <div className="dialog-actions">
-                  <button type="button" className="btn btn-ghost" onClick={() => { setScorerPicker(false); setScorerSelected(null); setGoalRemark(''); }}>Annuleren</button>
-                  <button type="button" className="btn btn-primary" disabled={!scorerSelected} onClick={() => logGoalUs(byId(scorerSelected), goalRemark, minuteInput)}>OK</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => { setScorerPicker(false); setScorerSelected(null); setAssistSelected(null); setGoalRemark(''); }}>Annuleren</button>
+                  <button type="button" className="btn btn-primary" disabled={!scorerSelected} onClick={() => logGoalUs(byId(scorerSelected), goalRemark, minuteInput, assistSelected ? byId(assistSelected) : null)}>OK</button>
                 </div>
               </div>
             </div>
@@ -2371,6 +3165,27 @@ export default function App() {
                     Minuut
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={editMinute} onChange={e => setEditMinute(e.target.value)} />
                   </label>
+                  {m.goalLog[editEntryIdx].team === 'us' && (
+                    <>
+                      <div className="field">
+                        <label htmlFor="editscorer">Schutter</label>
+                        <select className="input" id="editscorer" value={editScorerId} onChange={e => {
+                          const v = e.target.value;
+                          setEditScorerId(v);
+                          if (editAssistId === v) setEditAssistId('');
+                        }}>
+                          {scorerOptions.map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="editassist">Assist</label>
+                        <select className="input" id="editassist" value={editAssistId} onChange={e => setEditAssistId(e.target.value)}>
+                          <option value="">— geen —</option>
+                          {scorerOptions.filter(p => p.id !== editScorerId).map(p => <option key={p.id} value={p.id}>{displayFirst(p)}</option>)}
+                        </select>
+                      </div>
+                    </>
+                  )}
                   {(m.goalLog[editEntryIdx].team === 'note' || m.goalLog[editEntryIdx].team === 'us') && (
                     <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
                   )}
@@ -2383,7 +3198,23 @@ export default function App() {
                       const entry = m.goalLog[editEntryIdx];
                       const changes = { minute: Math.max(1, Number(editMinute) || entry.minute) };
                       if (entry.team === 'note') changes.text = editText.trim();
-                      else if (entry.team === 'us') changes.remark = editText.trim() || undefined;
+                      else if (entry.team === 'us') {
+                        changes.remark = editText.trim() || undefined;
+                        if (editScorerId && editScorerId !== entry.scorerId) {
+                          const newPlayer = byId(editScorerId);
+                          if (newPlayer) { changes.scorerId = newPlayer.id; changes.scorerName = displayFirst(newPlayer); }
+                        }
+                        const newAssistId = editAssistId || null;
+                        if ((entry.assistId || null) !== newAssistId) {
+                          if (newAssistId) {
+                            const newAssistPlayer = byId(newAssistId);
+                            if (newAssistPlayer) { changes.assistId = newAssistPlayer.id; changes.assistName = displayFirst(newAssistPlayer); }
+                          } else {
+                            changes.assistId = undefined;
+                            changes.assistName = undefined;
+                          }
+                        }
+                      }
                       updateLogEntry(editEntryIdx, changes);
                       setEditEntryIdx(null);
                     }}>Opslaan</button>
@@ -2472,10 +3303,11 @@ export default function App() {
                 {(m.goalLog || []).map((g, i) => (
                   <li key={i} style={css('display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);font-size:14px;padding:6px 10px;border-radius:var(--radius-md);background:var(--color-neutral-100)')}>
                     <span style={css('text-wrap:pretty')}>{formatMatchLogEntry(g, !(scoreFxObj && scoreFxObj.home === false), opponentName)}</span>
-                    {!m.liveEnded && (
-                      <button type="button" className="btn btn-ghost" style={css('padding:2px 6px;font-size:13px;flex:0 0 auto')}
-                        onClick={() => { setEditEntryIdx(i); setEditMinute(String(g.minute)); setEditText(g.team === 'note' ? g.text : (g.remark || '')); }}>Bewerken</button>
-                    )}
+                    {/* Ook nog te bewerken ná het afsluiten (m.liveEnded) - zie syncEndedMatchToFixture
+                        in updateLogEntry/removeLogEntry, en "Heropen" in Wedstrijdverslagen om een
+                        allang afgesloten wedstrijd hier terug te krijgen. */}
+                    <button type="button" className="btn btn-ghost" style={css('padding:2px 6px;font-size:13px;flex:0 0 auto')}
+                      onClick={() => { setEditEntryIdx(i); setEditMinute(String(g.minute)); setEditScorerId(g.scorerId || ''); setEditAssistId(g.assistId || ''); setEditText(g.team === 'note' ? g.text : (g.remark || '')); }}>Bewerken</button>
                   </li>
                 ))}
               </ul>
@@ -2499,6 +3331,20 @@ export default function App() {
           (niet-gepositioneerde) inhoud - anders zou hij juist BOVEN de gewone inhoud tekenen,
           ondanks dat hij als eerste in de DOM staat. */}
       <img src="/hcrb.png" alt="" aria-hidden="true" data-noprint="1" style={css('position:fixed;top:220px;right:max(var(--space-8),calc((100vw - 1180px) / 2 + var(--space-8)));width:min(12.5vw,120px);height:auto;opacity:0.06;filter:grayscale(1);pointer-events:none;user-select:none;z-index:-1')} />
+
+      {/* Doelpunt-viering - staat bewust buiten de tab-content (niet binnen {tab === '...' && ...})
+          zodat 'm op elk tabblad verschijnt, precies zoals gevraagd: iedereen die de wedstrijd
+          live volgt moet 'm zien, ongeacht waar ze op dat moment naar kijken. */}
+      {goalToast && (
+        <button type="button" data-noprint="1" className="goal-toast" onClick={() => setGoalToast(null)}
+          aria-label="Melding sluiten"
+          style={css('position:fixed;top:var(--space-4);left:50%;z-index:50;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 22px;border-radius:var(--radius-lg);border:none;cursor:pointer;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,0.28);text-align:center;background:' + (goalToast.kind === 'them' ? 'var(--color-neutral-800)' : 'var(--color-accent-700)'))}>
+          <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.85')}>
+            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚪ Goal voor ${clubName}!`}
+          </span>
+          <span style={css('font-family:var(--font-heading);font-size:20px;font-weight:600')}>{goalToast.text}</span>
+        </button>
+      )}
 
       <header data-noprint="1" style={css('display:flex;flex-direction:column;gap:6px')}>
         <div style={css('height:4px;background:var(--color-text)')}></div>
@@ -2527,6 +3373,24 @@ export default function App() {
                 )}
               </div>
               <div style={css('display:flex;align-items:center;gap:8px;margin-left:auto')}>
+                {/* Pushmelding bij een doelpunt - werkt ook met het scherm uit/in de broekzak,
+                    zie push.js voor de opzet en de iOS-beperking (alleen als "app op
+                    beginscherm" geïnstalleerd, niet in gewoon Safari). Wisselt tussen aan/uit
+                    via dezelfde togglePush, zie pushSubscribed hierboven. */}
+                {m.liveOpened && (
+                  <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
+                    title={pushSubscribed
+                      ? 'Zet doelpunt-pushmeldingen op dit toestel weer uit'
+                      : 'Werkt ook met vergrendeld scherm. Op iPhone: zet deze site eerst via het deelmenu op je beginscherm, anders staat Apple dit niet toe.'}
+                    onClick={togglePush}>{pushSubscribed ? '🔕 Meldingen uitzetten' : '🔔 Meldingen aanzetten'}</button>
+                )}
+                {pushStatus && pushStatus !== 'granted' && (
+                  <span style={css('font-size:12px;color:var(--color-neutral-700);max-width:220px')}>
+                    {pushStatus === 'denied'
+                      ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
+                      : 'Wordt hier niet ondersteund - op iPhone: zet de site eerst op je beginscherm.'}
+                  </span>
+                )}
                 {isMyTeam && (
                   <button type="button" className={matchMode ? 'btn btn-secondary' : 'btn btn-primary'} style={css('font-size:13px;padding:5px 10px')}
                     onClick={() => setMatchMode(v => !v)}>{matchMode ? 'Wedstrijdmodus uit' : 'Wedstrijdmodus'}</button>
@@ -2616,6 +3480,14 @@ export default function App() {
               <span style={css('font-size:15px;color:var(--color-neutral-700)')}>
                 {nSel} geselecteerd · {Math.max(0, nSel - 1)} veldspeelsters · {nSel >= 11 ? Math.max(0, nSel - 11) + ' op de bank per helft' : 'te weinig voor een volledig team'}
               </span>
+              {attendanceForMatch && (
+                <span style={css('font-size:13px;color:var(--color-neutral-700);display:flex;align-items:center;gap:10px')}>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.present }} /> aanwezig</span>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.unknown }} /> onbekend</span>
+                  <span style={css('display:flex;align-items:center;gap:4px')}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: ATTENDANCE_COLOR.absent }} /> afgemeld</span>
+                  {' '}(via mijn.lisahockey.nl{attendanceForMatch.field ? `, veld ${attendanceForMatch.field}` : ''})
+                </span>
+              )}
             </div>
             <div>
               <div style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);padding-bottom:6px')}>Team</div>
@@ -2689,6 +3561,23 @@ export default function App() {
                   <span>Zwakke tegenstander — minder sterke speelsters iets meer</span>
                 </label>
               </div>
+              {m.playTimeMode !== 'standaard' && (
+                <div style={css('display:flex;flex-direction:column;gap:6px;padding-top:14px;max-width:420px')}>
+                  <span style={css('display:inline-flex;align-items:center;gap:6px;font-size:16px')}>
+                    <span>Sterkteverdeling over de wedstrijd</span>
+                    <InfoDot text="Bepaalt of de sterkste/zwakste speelsters vooral in het 1e en 4e kwart spelen (huidig gedrag, rechts), of juist gelijk verdeeld over de hele wedstrijd (links). Werkt samen met de keuze hierboven." />
+                  </span>
+                  <input type="range" min="0" max="100" step="5" disabled={matchLocked || readOnly}
+                    aria-label="Sterkteverdeling over de wedstrijd"
+                    value={m.strengthCurve == null ? 100 : m.strengthCurve}
+                    onChange={e => patchMatch({ strengthCurve: Number(e.target.value), schedule: null })}
+                    style={css('width:100%')} />
+                  <div style={css('display:flex;justify-content:space-between;font-size:13px;color:var(--color-neutral-700)')}>
+                    <span>Gelijke sterkte</span>
+                    <span>Sterk 1e &amp; 4e kwart</span>
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <div style={css('font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-700);padding-bottom:6px')}>Positietoewijzing</div>
@@ -2722,6 +3611,16 @@ export default function App() {
                 <span style={css('font-size:14px;color:var(--color-neutral-700)')}>
                   {m.prefCorrection !== false ? 'Meer kans op ongelijke speeltijd' : 'Minder kans op ongelijke speeltijd'}
                 </span>
+
+                <span style={css('display:inline-flex;align-items:center;gap:6px')}>
+                  <span>Beperkte positiewissel binnen kwart</span>
+                  <InfoDot text="Bij de wissel op de helft van een kwart mag een speelster wisselen van positie binnen dezelfde linie (bv. links voor naar rechts voor) of dezelfde zone (bv. links voor naar links achter), en diagonaal alleen naar een direct aangesloten positie (bv. links voor naar mid mid, maar niet naar rechtshalf). Tussen kwarten door geldt deze beperking niet. Uit: geen beperking op de positiewissel binnen een kwart." />
+                </span>
+                <Switch checked={m.positionAdjacency !== false} disabled={matchLocked || readOnly}
+                  onChange={v => patchMatch({ positionAdjacency: v, schedule: null })} />
+                <span style={css('font-size:14px;color:var(--color-neutral-700)')}>
+                  {m.positionAdjacency !== false ? 'Positiewissel binnen kwart alleen naar naastgelegen positie' : 'Positiewissel binnen kwart vrij'}
+                </span>
               </div>
             </div>
           </section>
@@ -2737,6 +3636,24 @@ export default function App() {
                 De selectie is gewijzigd sinds dit schema is gemaakt. Klik op "Schema opnieuw maken" om de toegevoegde of verwijderde speelster(s) mee te nemen — het schema hieronder is nog gebaseerd op de vorige selectie.
               </div>
             )}
+
+            <div data-noprint="1" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:820px')}>
+              <div style={css('font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--color-neutral-700)')}>Vast aantal speelblokken — bv. bij een lichte blessure, of een speler die minder vaak heeft gespeeld en dit toch moet halen</div>
+              <div style={css('display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap')}>
+                <select className="input" aria-label="Speler" style={css('max-width:220px')} value={fixedBlocksPlayer} onChange={e => setFixedBlocksPlayer(e.target.value)}>
+                  <option value="">— speler —</option>
+                  {fixedBlocksOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <input className="input" type="number" min="1" max="8" aria-label="Aantal speelblokken" style={css('max-width:100px')} value={fixedBlocksValue} onChange={e => setFixedBlocksValue(e.target.value)} />
+                <button type="button" className="btn btn-primary" disabled={readOnly || !fixedBlocksPlayer} onClick={applyFixedBlocks}>Instellen</button>
+              </div>
+              <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700);max-width:70ch')}>Ze speelt dan precies dit aantal blokken (niet meer, niet minder — ook als haar sterkte volgens Sterk/Zwak eigenlijk minder of meer zou geven), verspreid over de hele wedstrijd, en telt niet mee in de eerlijkheidscheck van de overige veldspelers. Wijzigingen hier wissen het schema — klik daarna op "Schema (opnieuw) maken".</p>
+              {fixedBlocksList.length > 0 && (
+                <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap;padding-top:var(--space-1)')}>
+                  {fixedBlocksList.map(i => <button key={i.key} type="button" className="tag tag-accent-2" onClick={i.clear} style={{ cursor: 'pointer', border: 'none' }}>{i.label}</button>)}
+                </div>
+              )}
+            </div>
           </section>
 
           {sched && (
@@ -2984,7 +3901,7 @@ export default function App() {
               <li>4 kwarten van 17,5 minuut.</li>
               <li>Elk kwart wordt halverwege (na 8 minuten) gewisseld — dit wordt aangezegd zodat de wissel zo snel mogelijk kan plaatsvinden.</li>
               <li>Iedereen die de 1e helft van een kwart op de bank zit, komt gegarandeerd de 2e helft het veld in.</li>
-              <li>We beginnen sterk (kwart 1) en eindigen sterk (kwart 4).</li>
+              <li>Standaard beginnen we sterk (kwart 1) en eindigen we sterk (kwart 4) — instelbaar via de schuif "Sterkteverdeling over de wedstrijd" bij Stap 2.</li>
             </ul>
           </div>
 
@@ -2992,6 +3909,7 @@ export default function App() {
             <h3 style={css('font-family:var(--font-heading);font-size:20px;margin:0 0 6px;font-weight:600')}>Opstelling</h3>
             <ul style={css('margin:0;padding-left:1.2em;font-size:16px;line-height:1.6;text-wrap:pretty')}>
               <li>Per speelster is per positie een voorkeur vastgelegd (1 = beste positie, 2 = op één na beste, enz.).</li>
+              <li>Een positie kan met 🚫 als verboden worden gemarkeerd — daar wordt die speelster nooit ingedeeld, ook niet als er verder geen voorkeur is opgegeven.</li>
               <li>Voorkeurspositie weegt zwaarder dan sterkte — liever de juiste positie dan de sterkste speelster op een verkeerde plek.</li>
               <li>De as (posities in het midden) wordt met de sterkste speelsters bemand, gevolgd door rechts, dan links.</li>
               <li>Niveau (Pril t/m Uitblinkend) bepaalt de sterkte-afweging bij gelijke voorkeur.</li>
@@ -3059,7 +3977,7 @@ export default function App() {
               <thead><tr>
                 <th style={{ textAlign: 'left', width: '122px', padding: '4px 5px' }}>Datum</th>
                 <th style={{ textAlign: 'left', width: '200px', padding: '4px 5px' }}>Wedstrijd</th>
-                <th style={{ textAlign: 'left', width: '38px', padding: '4px 5px' }}>Dag</th>
+                <th style={{ textAlign: 'left', width: '44px', padding: '4px 5px' }}>Veld</th>
                 <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Verzamel</th>
                 <th style={{ textAlign: 'left', width: '96px', padding: '4px 5px' }}>Start</th>
                 <th style={{ textAlign: 'left', width: '120px', padding: '4px 5px' }}>Type</th>
@@ -3076,7 +3994,11 @@ export default function App() {
                       <span style={{ color: 'var(--color-neutral-700)' }}> – </span>
                       <span style={css(f.awayStyle)}>{f.awayName}{!f.home ? ' ♥' : ''}</span>
                     </td>
-                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', padding: '4px 5px' }}>{f.day}</td>
+                    <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', padding: '4px 5px' }}>
+                      {!readOnly && f.friendly
+                        ? <input className="input" type="text" aria-label={`Veld — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.veld} onChange={f.onVeld} />
+                        : (f.veld || '—')}
+                    </td>
                     <td style={{ padding: '4px 5px' }}>{readOnly ? (f.verzameltijd || '—') : <input className="input" type="time" aria-label={`Verzameltijd — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.verzameltijd} onChange={f.onVerzameltijd} />}</td>
                     <td style={{ padding: '4px 5px' }}>{readOnly ? (f.time || '—') : <input className="input" type="time" aria-label={`Start — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('padding:4px 2px;width:100%')} value={f.time} onChange={f.onTime} />}</td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)', overflowWrap: 'break-word', padding: '4px 5px' }}>{f.type}</td>
@@ -3086,11 +4008,20 @@ export default function App() {
                           <span className="blink-alert" style={css('width:7px;height:7px;border-radius:50%;background:#c23b3b;display:inline-block;flex:0 0 auto')} />
                           {f.live.home}–{f.live.away}
                         </span>
-                      ) : readOnly ? (f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—') : (
+                      // Een al gespeelde competitiewedstrijd (niet-oefenwedstrijd) is hier niet meer
+                      // handmatig te wijzigen - zodra LISA een uitslag kent is die leidend (zie
+                      // refreshPouleSchedule, die 'm dan overschrijft bij de volgende
+                      // import/ververs), dus een los handmatig getypt cijfer zou toch weer
+                      // overschreven worden en kan intussen alleen verwarring geven.
+                      // f.gf/f.ga zijn "voor"/"tegen" (eigen team), maar de Wedstrijd-kolom
+                      // ernaast toont altijd thuis–uit - bij een uitwedstrijd moet de uitslag dus
+                      // als ga–gf getoond worden om in dezelfde volgorde te lezen, anders lijkt
+                      // een 4-3 zege op een 3-4-nederlaag.
+                      ) : (readOnly || (!f.friendly && f.played)) ? (f.gf !== '' && f.ga !== '' ? (f.home ? `${f.gf} – ${f.ga}` : `${f.ga} – ${f.gf}`) : '—') : (
                         <span style={css('display:inline-flex;align-items:center;gap:2px')}>
-                          <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:30px;text-align:center;padding:4px 2px')} value={f.gf} onChange={f.onGf} />
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten voor — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:42px;text-align:center;padding:4px 2px')} value={f.gf} onChange={f.onGf} />
                           <span>–</span>
-                          <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:30px;text-align:center;padding:4px 2px')} value={f.ga} onChange={f.onGa} />
+                          <input className="input" type="number" min="0" aria-label={`Doelpunten tegen — wedstrijd tegen ${f.opponent || 'onbekend'}`} style={css('width:42px;text-align:center;padding:4px 2px')} value={f.ga} onChange={f.onGa} />
                         </span>
                       )}
                     </td>
@@ -3111,8 +4042,52 @@ export default function App() {
             {isMyTeam && lisaConfig && (
               <button type="button" className="btn btn-secondary" disabled={lisaBusy} onClick={importLisaMatches}>{lisaBusy ? 'Bezig…' : 'Importeer wedstrijden'}</button>
             )}
+            {pouleSchedule.length > 0 && (
+              <button type="button" className="btn btn-secondary" onClick={() => setPouleScheduleOpen(v => !v)}>
+                {pouleScheduleOpen ? 'Verberg hele competitie' : 'Bekijk hele competitie'}
+              </button>
+            )}
+            {isMyTeam && lisaConfig && (
+              <button type="button" className="btn btn-ghost" disabled={pouleScheduleBusy} onClick={refreshPouleSchedule}>
+                {pouleScheduleBusy ? 'Bezig…' : (pouleSchedule.length ? 'Ververs competitieprogramma' : 'Haal hele competitie op')}
+              </button>
+            )}
           </div>
           {isMyTeam && lisaConfig && lisaError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaError}</div>}
+          {pouleScheduleError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{pouleScheduleError}</div>}
+
+          {pouleScheduleOpen && pouleSchedule.length > 0 && (
+            <div style={css('display:flex;flex-direction:column;gap:var(--space-2);padding-top:var(--space-2)')}>
+              <div style={css('display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap')}>
+                <h3 style={css('font-family:var(--font-heading);font-size:20px;margin:0;font-weight:600')}>{pouleName || 'Competitieprogramma'}</h3>
+                {pouleScheduleUpdatedAt && (
+                  <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                    Bijgewerkt op {new Date(pouleScheduleUpdatedAt).toLocaleString('nl-NL', { dateStyle: 'medium', timeStyle: 'short' })}
+                  </span>
+                )}
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table" style={css('min-width:520px')}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left' }}>Datum</th>
+                      <th style={{ textAlign: 'left' }}>Wedstrijd</th>
+                      <th>Uitslag</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pouleSchedule.map(pm => (
+                      <tr key={pm.id}>
+                        <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{pm.date ? nlDate(pm.date.slice(0, 10)) : '—'}</td>
+                        <td style={{ textAlign: 'left' }}>{pm.home} – {pm.away}</td>
+                        <td style={{ textAlign: 'center' }}>{pm.played ? `${pm.homeScore} – ${pm.awayScore}` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {addFixtureOpen && (
             <div className="dialog-backdrop" onClick={() => setAddFixtureOpen(false)}>
@@ -3121,6 +4096,7 @@ export default function App() {
                 <div className="field"><label htmlFor="afdate">Datum</label><input className="input" id="afdate" type="date" value={addFixtureForm.date} onChange={e => setAddFixtureForm(f => ({ ...f, date: e.target.value }))} /></div>
                 <div className="field"><label htmlFor="aftime">Tijd</label><input className="input" id="aftime" type="time" value={addFixtureForm.time} onChange={e => setAddFixtureForm(f => ({ ...f, time: e.target.value }))} /></div>
                 <div className="field"><label htmlFor="afopp">Tegenstander</label><input className="input" id="afopp" type="text" value={addFixtureForm.opponent} onChange={e => setAddFixtureForm(f => ({ ...f, opponent: e.target.value }))} /></div>
+                <div className="field"><label htmlFor="afveld">Veld</label><input className="input" id="afveld" type="text" style={css('max-width:80px')} value={addFixtureForm.veld} onChange={e => setAddFixtureForm(f => ({ ...f, veld: e.target.value }))} /></div>
                 <div className="seg">
                   <label className="seg-opt"><input type="radio" name="afhome" checked={addFixtureForm.home} onChange={() => setAddFixtureForm(f => ({ ...f, home: true }))} /><span>Thuis</span></label>
                   <label className="seg-opt"><input type="radio" name="afhome" checked={!addFixtureForm.home} onChange={() => setAddFixtureForm(f => ({ ...f, home: false }))} /><span>Uit</span></label>
@@ -3206,27 +4182,37 @@ export default function App() {
       {tab === 'team' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
-          <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt.</p>
+          {isMyTeam && <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt. Met 🚫 geef je aan dat ze op die positie nooit ingedeeld mag worden.</p>}
           <div style={{ overflowX: 'auto' }}>
-            <table className="table" style={css('min-width:1080px')}>
+            {/* De brede min-width is alleen nodig zodra de positievoorkeur-kolommen (en Niveau)
+                erbij staan - voor een niet-coach/admin-viewer, die alleen Speelster/Type/KP/DP
+                ziet, zou dat een tabel vol lege ruimte opleveren. */}
+            {/* Voor iemand die niet is ingelogd (dus nooit isMyTeam) blijven alleen Speelster/Type/
+                KP/DP/AP over - de globale .table-class rekt dan naar de volle breedte van de
+                pagina (width:100%), wat de paar smalle kolommen (KP/DP/AP) uit verhouding met de
+                naamkolom trekt. width:auto hier overschrijft dat zodat de tabel weer op zijn
+                inhoud past, met min-width alleen als ondergrens. */}
+            <table className="table" style={css('min-width:' + (isMyTeam ? '1080px' : '540px') + (isMyTeam ? '' : ';width:auto'))}>
               <thead>
                 <tr>
                   <th style={{ textAlign: 'left' }}>Speelster</th>
                   <th>Type</th>
-                  {/* Niveau is de enige kolom die niet voor iedereen zichtbaar is - alleen coaches
-                      (of admin) van dít team zien 'm; coaches van een ander team en bezoekers die
-                      niet zijn ingelogd zien de rest van de teampagina wel, maar deze kolom niet. */}
+                  {/* Niveau en de positievoorkeuren zijn niet voor iedereen zichtbaar - alleen
+                      coaches (of admin) van dít team zien ze; coaches van een ander team en
+                      bezoekers die niet zijn ingelogd zien de rest van de teampagina (incl.
+                      doelpunten) wel, maar deze kolommen niet. */}
                   {isMyTeam && <th>Niveau</th>}
-                  {posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
+                  {isMyTeam && posCols.map(p => <th key={p.key} style={{ fontSize: '12px' }}>{p.short} ({p.count})</th>)}
                   <th style={{ fontSize: '12px' }}>KP ({kpCount})</th>
                   <th style={{ fontSize: '12px' }}>DP</th>
+                  <th style={{ fontSize: '12px' }}>AP</th>
                   {!readOnly && <th></th>}
                 </tr>
               </thead>
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name} ({r.posCount})</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     {isMyTeam && (
                       <td style={{ textAlign: 'center' }}>
@@ -3235,10 +4221,17 @@ export default function App() {
                         </select>
                       </td>
                     )}
-                    {r.cells.map(c => (
+                    {isMyTeam && r.cells.map(c => (
                       <td key={c.key} style={{ textAlign: 'center' }}>
-                        {readOnly ? (c.value || '—') : (
-                          <input className="input" type="number" min="1" max="9" aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={c.value} onChange={c.onChange} />
+                        {readOnly ? (c.forbidden ? '🚫' : (c.value || '—')) : (
+                          <div style={css('display:flex;flex-direction:column;align-items:center;gap:2px')}>
+                            <input className="input" type="number" min="1" max="9" disabled={c.forbidden} aria-label={`Voorkeur ${PMAP[c.key].label} voor ${r.name}`} style={css('width:46px;text-align:center;padding:4px' + (c.forbidden ? ';opacity:0.35' : ''))} value={c.forbidden ? '' : c.value} onChange={c.onChange} />
+                            <button type="button" className="btn btn-ghost" onClick={c.onToggleForbidden}
+                              aria-label={`${PMAP[c.key].label} verbieden voor ${r.name}`}
+                              aria-pressed={c.forbidden}
+                              title="Mag hier nooit ingedeeld worden"
+                              style={css('padding:0 2px;font-size:11px;line-height:1.4;border:none;background:none;cursor:pointer;color:' + (c.forbidden ? 'var(--color-accent-2-700)' : 'var(--color-neutral-400)'))}>🚫</button>
+                          </div>
                         )}
                       </td>
                     ))}
@@ -3248,6 +4241,11 @@ export default function App() {
                         <input className="input" type="number" min="0" aria-label={`Doelpunten dit seizoen — ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={r.dp} onChange={r.onDp} />
                       )}
                     </td>
+                    <td style={{ textAlign: 'center' }}>
+                      {readOnly ? (r.ap || '0') : (
+                        <input className="input" type="number" min="0" aria-label={`Assists dit seizoen — ${r.name}`} style={css('width:46px;text-align:center;padding:4px')} value={r.ap} onChange={r.onAp} />
+                      )}
+                    </td>
                     {!readOnly && <td style={{ textAlign: 'center' }}><button type="button" className="btn btn-ghost" style={{ padding: '2px 8px' }} onClick={r.remove}>×</button></td>}
                   </tr>
                 ))}
@@ -3255,7 +4253,7 @@ export default function App() {
             </table>
           </div>
           <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
-            <strong>Legenda</strong> — {POS.map(p => p.k + ': ' + p.label).join(' · ')} · KP: Vaste keeper
+            <strong>Legenda</strong> — {isMyTeam ? POS.map(p => p.k + ': ' + p.label).join(' · ') + ' · ' : ''}KP: Vaste keeper · DP: Doelpunten · AP: Assists
           </p>
           {!readOnly && (
             <div style={css('display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;padding-top:var(--space-2)')}>
@@ -3273,7 +4271,10 @@ export default function App() {
       {tab === 'verslagen' && (
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Wedstrijdverslagen</h2>
-          <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Wedstrijden die vanuit wedstrijdmodus zijn beëindigd, staan hier met het scoreverloop van die wedstrijd.</p>
+          <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
+            Wedstrijden die vanuit wedstrijdmodus zijn beëindigd, staan hier met het scoreverloop van die wedstrijd.
+            {isMyTeam ? ' Klik op "Heropen" om de wedstrijd terug in wedstrijdmodus te zetten en het scoreverloop (bv. een verkeerd geselecteerde schutter) alsnog te corrigeren.' : ''}
+          </p>
           <div style={{ overflowX: 'auto' }}>
             <table className="table">
               <thead>
@@ -3293,13 +4294,21 @@ export default function App() {
                       <span style={css(f.homeStyle)}>{f.homeName}</span> – <span style={css(f.awayStyle)}>{f.awayName}</span>
                     </td>
                     <td style={{ textAlign: 'left', color: 'var(--color-neutral-700)' }}>{f.type}</td>
-                    <td style={{ textAlign: 'center' }}>{f.gf !== '' && f.ga !== '' ? `${f.gf} – ${f.ga}` : '—'}</td>
+                    {/* f.gf/f.ga zijn "voor"/"tegen" (eigen team) - bij een uitwedstrijd (Wedstrijd-
+                        kolom toont altijd thuis–uit) moet dat als ga–gf getoond worden om in
+                        dezelfde volgorde te lezen, anders lijkt een zege op een nederlaag. */}
+                    <td style={{ textAlign: 'center' }}>{f.gf !== '' && f.ga !== '' ? (f.home ? `${f.gf} – ${f.ga}` : `${f.ga} – ${f.gf}`) : '—'}</td>
                     <td style={{ textAlign: 'left' }}>
-                      {f.report ? (
-                        <button type="button" className="btn btn-ghost" style={css('padding:2px 8px;font-size:14px')} onClick={() => setExpandedReportId(id => id === f.key ? null : f.key)}>
-                          {expandedReportId === f.key ? 'Verberg verslag' : 'Bekijk verslag'}
-                        </button>
-                      ) : '—'}
+                      <span style={css('display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap')}>
+                        {f.report ? (
+                          <button type="button" className="btn btn-ghost" style={css('padding:2px 8px;font-size:14px')} onClick={() => setExpandedReportId(id => id === f.key ? null : f.key)}>
+                            {expandedReportId === f.key ? 'Verberg verslag' : 'Bekijk verslag'}
+                          </button>
+                        ) : '—'}
+                        {isMyTeam && f.report && (
+                          <button type="button" className="btn btn-ghost" style={css('padding:2px 8px;font-size:14px')} onClick={() => reopenMatchForEditing(f.key)}>Heropen</button>
+                        )}
+                      </span>
                     </td>
                   </tr>,
                   expandedReportId === f.key && f.report ? (
@@ -3426,6 +4435,54 @@ export default function App() {
           ) : (
             <p className="card-body" style={css('margin:0')}>{fixtures.length ? 'Geen aankomende wedstrijden.' : 'Nog geen wedstrijden in het programma.'}</p>
           )}
+        </main>
+      )}
+
+      {tab === 'push' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Push meldingen</h2>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
+              Zet meldingen aan om bij elk doelpunt tijdens een live wedstrijd automatisch een pushmelding te krijgen -
+              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot het geluid/de
+              banner die alleen werken zolang de pagina open en actief is.
+            </p>
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3)')}>
+            {pushSubscribed && <span style={css('font-size:15px')}>✅ Meldingen staan aan op dit toestel/deze browser.</span>}
+            <button type="button" className={pushSubscribed ? 'btn btn-secondary' : 'btn btn-primary'} style={css('align-self:flex-start')}
+              onClick={togglePush}>{pushSubscribed ? '🔕 Meldingen uitzetten' : '🔔 Meldingen aanzetten'}</button>
+            {pushStatus && pushStatus !== 'granted' && (
+              <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                {pushStatus === 'denied'
+                  ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
+                  : 'Wordt op dit toestel/deze browser niet ondersteund - zie de iPhone-stappen hieronder als je op een iPhone/iPad zit.'}
+              </span>
+            )}
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div className="card-title">Android (Chrome)</div>
+            <ol style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.7')}>
+              <li>Open deze site in Chrome op je telefoon.</li>
+              <li>Tik hierboven op "Meldingen aanzetten".</li>
+              <li>Kies "Toestaan" zodra Chrome om toestemming vraagt.</li>
+              <li>Klaar - je krijgt nu automatisch een melding bij elk doelpunt, ook met het scherm uit.</li>
+            </ol>
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div className="card-title">iPhone/iPad (Safari)</div>
+            <ol style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.7')}>
+              <li>Open deze site in Safari (moet Safari zijn - Apple staat pushmeldingen alleen toe vanuit Safari, niet vanuit Chrome of een andere browser-app).</li>
+              <li>Tik op het deel-icoon (het vierkantje met de pijl omhoog) onderin de balk.</li>
+              <li>Kies "Zet op beginscherm".</li>
+              <li>Open de site daarna via het nieuwe icoon op je beginscherm - <strong>niet meer via Safari zelf</strong>. Dit is nodig omdat Apple pushmeldingen alleen toestaat vanuit een op deze manier geïnstalleerde site, niet in de gewone browser.</li>
+              <li>Tik hierboven op "Meldingen aanzetten" en kies "Toestaan".</li>
+            </ol>
+            <p className="card-body" style={css('margin:0')}>Werkt alleen op iOS/iPadOS 16.4 of nieuwer.</p>
+          </div>
         </main>
       )}
 
@@ -3740,6 +4797,54 @@ export default function App() {
             </div>
           )}
 
+          {/* Bewust een aparte kaart/state van "Koppeling met clubwebsite" hierboven: dit token
+              is niet team-gescoped (het is gekoppeld aan wie 'm persoonlijk heeft ingelogd op
+              mijn.lisahockey.nl, en dat account kan elk team van de club zien - bevestigd
+              2026-09-05 via "Alle teams"), dus deze koppeling blijft bewust admin-only, ook in
+              de Firestore-rules (lisaClubs/{clubId}/config/lisaMy), i.p.v. coach-leesbaar zoals
+              config/lisa. Ligt daarom ook één keer per club opgeslagen i.p.v. per team - de
+              clubwebsite-koppeling hierboven (lisaConfig.clubDudaId) bepaalt welke club dat is,
+              dus die moet eerst gezet zijn voordat deze kaart iets kan tonen/opslaan. */}
+          {isAdmin && (
+            <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:520px')}>
+              <div className="card-title">Aanwezigheid (mijn.lisahockey.nl) — hele club</div>
+              {!lisaMyClubId ? (
+                <p className="card-body" style={css('margin:0')}>Koppel eerst de clubwebsite hierboven ("Koppeling met clubwebsite") — daaruit haalt deze koppeling het club-id, en die is nodig om deze (club-brede) koppeling op te kunnen slaan/tonen.</p>
+              ) : (
+                <>
+                  {lisaMyConfig ? (
+                    <>
+                      <p className="card-body" style={css('margin:0')}>Gekoppeld. Alleen zichtbaar/wijzigbaar voor een beheerder — dit token geeft toegang tot alle teams van de club (niet alleen {ownTeamName}), en wordt dus maar één keer voor de hele club opgeslagen.</p>
+                      {lisaMyError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaMyError}</div>}
+                      <div style={css('display:flex;gap:var(--space-2);flex-wrap:wrap')}>
+                        <button type="button" className="btn btn-secondary" disabled={attendanceBusy} onClick={refreshAttendance}>{attendanceBusy ? 'Bezig…' : 'Aanwezigheid ophalen'}</button>
+                        <button type="button" className="btn btn-ghost" onClick={() => setLisaMyEditing(true)}>Koppeling wijzigen</button>
+                      </div>
+                      {attendanceError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{attendanceError}</div>}
+                      {attendance && attendance.updatedAt && (
+                        <p style={css('margin:0;font-size:13px;color:var(--color-neutral-700)')}>Aanwezigheid laatst opgehaald: {new Date(attendance.updatedAt).toLocaleString('nl-NL')}.</p>
+                      )}
+                    </>
+                  ) : null}
+                  {(!lisaMyConfig || lisaMyEditing) && (
+                    <>
+                      <p className="card-body" style={css('margin:0')}>
+                        Log in op mijn.lisahockey.nl, open DevTools Network-tab, en klik een wedstrijd open. Bij Request Headers
+                        van het request naar <code>/api/v1/my/clubs/{lisaMyClubId}/matches/...</code> vind je de <code>Authorization</code>-
+                        en <code>X-Lisa-Auth-Token</code>-waarden. Het federatie-id komt van <code>/api/v1/my/federations?domain=mijn.lisahockey.nl</code>.
+                      </p>
+                      <div className="field"><label htmlFor="lc5">Federatie-id</label><input className="input" id="lc5" type="text" value={lisaMyForm.myFederationId} onChange={e => setLisaMyForm(f => ({ ...f, myFederationId: e.target.value }))} /></div>
+                      <div className="field"><label htmlFor="lc6">Authorization-header</label><input className="input" id="lc6" type="text" placeholder="Basic ..." value={lisaMyForm.myAuthBasic} onChange={e => setLisaMyForm(f => ({ ...f, myAuthBasic: e.target.value }))} /></div>
+                      <div className="field"><label htmlFor="lc7">X-Lisa-Auth-Token</label><input className="input" id="lc7" type="text" value={lisaMyForm.myAuthToken} onChange={e => setLisaMyForm(f => ({ ...f, myAuthToken: e.target.value }))} /></div>
+                      {lisaMyError && <div style={css('font-size:13px;color:var(--color-accent-2-700)')}>{lisaMyError}</div>}
+                      <button type="button" className="btn btn-primary" style={css('align-self:flex-start')} onClick={saveLisaMyConfig}>Koppeling opslaan</button>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
           {isAdmin && (
             <div className="card elev-sm" style={css('display:flex;flex-direction:column;gap:var(--space-2);max-width:420px')}>
               <div className="card-title">Nieuw team</div>
@@ -3798,6 +4903,8 @@ export default function App() {
       )}
 
       </>)}
+
+      <div data-noprint="1" style={css('text-align:center;padding:var(--space-6) 0 0;font-size:11px;color:var(--color-neutral-500)')}>v{__APP_VERSION__}</div>
     </div>
   );
 }
