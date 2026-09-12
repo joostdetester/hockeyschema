@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.3.0',
+    date: '2026-09-12',
+    changes: [
+      'Wedstrijdmodus: bij het doelpunt-commentaar en "Extra live commentaar" kan nu ook worden ingesproken i.p.v. getypt (spraakherkenning) - de tekst blijft daarna gewoon nog met de hand aan te passen.',
+    ],
+  },
+  {
     version: '1.2.0',
     date: '2026-09-12',
     changes: [

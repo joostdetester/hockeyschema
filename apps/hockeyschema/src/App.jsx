@@ -199,6 +199,46 @@ function markBadge(mark) {
   );
 }
 
+// Microfoonknopje naast een tekstveld dat spraak-naar-tekst aanbiedt (Web Speech API, zoals
+// Windows-toets+H) - alleen zichtbaar als de browser dit ondersteunt (o.a. niet in Firefox).
+// Herkende tekst wordt achter de bestaande inhoud van het veld geplakt; de coach kan de tekst
+// daarna nog gewoon met de hand aanpassen, spraakherkenning is nooit het laatste woord.
+function DictateButton({ setText, disabled }) {
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+  const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+  if (!Recognition) return null;
+
+  function toggle() {
+    if (listening) { recognitionRef.current?.stop(); return; }
+    const recognition = new Recognition();
+    recognition.lang = 'nl-NL';
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = e => {
+      let addition = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) addition += e.results[i][0].transcript;
+      }
+      addition = addition.trim();
+      if (addition) setText(t => (t && t.trim() ? t.trim() + ' ' : '') + addition);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  return (
+    <button type="button" disabled={disabled} className={listening ? 'btn btn-primary' : 'btn btn-secondary'}
+      style={css('padding:3px 10px;font-size:12px;align-self:flex-end')} onClick={toggle}>
+      {listening ? '⏺ Luistert… (klik om te stoppen)' : '🎤 Inspreken'}
+    </button>
+  );
+}
+
 // Klein rond knopje op een schemacel om een notitie toe te voegen - toont een stipje/aantal
 // zodra er al aantekeningen voor die speler in dat kwart bestaan (rood als er een werkpunt
 // bij zit, anders groen), zodat je in één oogopslag ziet waar al iets genoteerd is.
@@ -3241,6 +3281,7 @@ export default function App() {
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
                   <textarea className="input" placeholder="Opmerking over dit doelpunt (optioneel)" style={css('min-height:50px;resize:vertical;font-family:inherit')} value={goalRemark} onChange={e => setGoalRemark(e.target.value)} />
+                  <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setGoalRemark} /></div>
                   {!scorerOptions.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Geen speelsters geselecteerd voor deze wedstrijd.</p>}
                   {/* Twee kolommen naast elkaar: links de schutter kiezen, rechts (optioneel) de
                       assist. Zodra iemand als schutter is gekozen verdwijnt haar naam uit de
@@ -3320,7 +3361,10 @@ export default function App() {
                     </>
                   )}
                   {(m.goalLog[editEntryIdx].team === 'note' || m.goalLog[editEntryIdx].team === 'us') && (
-                    <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
+                    <>
+                      <textarea className="input" placeholder={m.goalLog[editEntryIdx].team === 'note' ? 'Commentaar' : 'Opmerking over dit doelpunt (optioneel)'} style={css('min-height:70px;resize:vertical;font-family:inherit')} value={editText} onChange={e => setEditText(e.target.value)} />
+                      <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setEditText} /></div>
+                    </>
                   )}
                 </div>
                 <div className="dialog-actions" style={css('justify-content:space-between')}>
@@ -3389,6 +3433,7 @@ export default function App() {
                     <input className="input" type="number" min="1" style={css('width:60px;padding:4px 6px;text-align:center')} value={minuteInput} onChange={e => setMinuteInput(e.target.value)} />
                   </label>
                   <textarea className="input" placeholder="Bv. Speelster van Alphen krijgt rood" style={css('width:100%;min-height:80px;resize:vertical;font-family:inherit')} value={commentText} onChange={e => setCommentText(e.target.value)} autoFocus />
+                  <div style={css('display:flex;justify-content:flex-end')}><DictateButton setText={setCommentText} /></div>
                 </div>
                 <div className="dialog-actions">
                   <button type="button" className="btn btn-ghost" onClick={() => { setCommentDialog(false); setCommentText(''); }}>Annuleren</button>
