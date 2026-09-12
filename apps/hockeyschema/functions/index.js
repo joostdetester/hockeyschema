@@ -509,9 +509,21 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   if (tokensSnap.empty) return;
   const tokens = tokensSnap.docs.map(d => d.id);
 
+  // Waar de melding naartoe moet linken bij een klik (zie de notificationclick-handler in
+  // firebase-messaging-sw.js): naar Live zolang de wedstrijd op het moment van versturen nog
+  // bezig was, anders naar het bijbehorende wedstrijdverslag als dat al is opgeslagen (fx.report,
+  // gezet door endMatch() in App.jsx), anders naar de algemene Wedstrijdverslagen-pagina. Dit
+  // wordt bepaald op het moment van versturen, niet bij het klikken zelf - in de praktijk klikt
+  // iemand meestal snel na een melding, dus dit is een redelijke inschatting zonder dat de
+  // service worker daarvoor zelf Firestore hoeft te bevragen.
+  const isLive = !!(after.match || {}).liveOpened && !(after.match || {}).liveEnded;
+  const data = { teamId, tab: isLive ? 'live' : 'verslagen' };
+  if (!isLive && fx && fx.report) data.report = fx.id;
+
   const res = await admin.messaging().sendEachForMulticast({
     tokens,
     notification: { title: '⚪ Doelpunt!', body },
+    data,
   });
 
   // Ruimt tokens op die niet meer bestaan (uitgeschreven browser, verlopen registratie e.d.) -

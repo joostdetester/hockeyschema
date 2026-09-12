@@ -4,6 +4,14 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.9.0',
+    date: '2026-09-12',
+    changes: [
+      'Doelpunt-pushmelding: klikken erop opent nu direct de juiste pagina - Live als de wedstrijd op dat moment nog bezig was, anders het bijbehorende wedstrijdverslag (indien al opgeslagen), anders de algemene Wedstrijdverslagen-pagina.',
+      'Scoreverloop en wedstrijdverslagen: klikken op een spelerskaartje toont het groot, net als bij Team.',
+    ],
+  },
+  {
     version: '1.8.0',
     date: '2026-09-12',
     changes: [

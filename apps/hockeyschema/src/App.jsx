@@ -695,6 +695,32 @@ export default function App() {
   const [endMatchConfirm, setEndMatchConfirm] = useState(false);
   const [manualClockInput, setManualClockInput] = useState('');
   const [expandedReportId, setExpandedReportId] = useState(null);
+  // Diep-linken vanuit een pushmelding (?team=&tab=&report=, zie de notificationclick-handler in
+  // firebase-messaging-sw.js): naar Live als de wedstrijd nog bezig was toen de melding werd
+  // verstuurd, anders naar het bijbehorende wedstrijdverslag (indien al opgeslagen), anders naar
+  // de algemene Wedstrijdverslagen-pagina. ?team= is nodig omdat iemand niet-ingelogd meerdere
+  // teams kan volgen - zonder team-param zou zo iemand op het standaardteam terechtkomen i.p.v.
+  // het team waar de melding daadwerkelijk over ging. Wacht bij een team-param op teamsLoaded
+  // (om 'm te kunnen valideren) voordat er iets wordt toegepast; zonder team-param gebeurt dat
+  // meteen. Ververst maar één keer, anders zou een latere handmatige tabwissel steeds worden
+  // teruggezet zolang de query-string nog in de adresbalk staat.
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const wantTeam = params.get('team');
+    const wantTab = params.get('tab');
+    const wantReport = params.get('report');
+    if (!wantTeam && !wantTab && !wantReport) { deepLinkAppliedRef.current = true; return; }
+    if (wantTeam) {
+      if (!teamsLoaded) return;
+      if (teams.some(t => t.id === wantTeam)) setCurrentTeamId(wantTeam);
+    }
+    if (wantTab) setTab(wantTab);
+    if (wantReport) setExpandedReportId(wantReport);
+    deepLinkAppliedRef.current = true;
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [teamsLoaded, teams]);
   // Index (in m.goalLog) van de logregel die de coach nu aan het bewerken is, plus het
   // bijbehorende bewerkformulier - null = geen bewerkdialoog open.
   const [editEntryIdx, setEditEntryIdx] = useState(null);
@@ -3169,7 +3195,12 @@ export default function App() {
     const cards = logEntryCards(g);
     const cardRow = cards.length > 0 && (
       <span style={css('display:inline-flex;gap:4px;vertical-align:middle;margin-left:8px')}>
-        {cards.map(c => <img key={c.id} src={c.card} alt="" title={c.name} style={css('height:26px;width:auto;border-radius:4px;object-fit:cover;vertical-align:middle')} />)}
+        {cards.map(c => (
+          <button key={c.id} type="button" onClick={() => setCardModal(c.card)} title={`Spelerskaart van ${c.name}`}
+            style={css('border:none;padding:0;cursor:pointer;background:none;line-height:0;vertical-align:middle')}>
+            <img src={c.card} alt="" style={css('height:26px;width:auto;border-radius:4px;object-fit:cover;vertical-align:middle')} />
+          </button>
+        ))}
       </span>
     );
     if (g.team === 'note') return <>{g.minute}e minuut: {g.text}{cardRow}</>;
