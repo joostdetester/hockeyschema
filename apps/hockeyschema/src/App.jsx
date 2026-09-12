@@ -42,6 +42,15 @@ const ZONE_COL = { links: 0, as: 1, rechts: 2 };
 // Toegestane positiewissel binnen een kwart (zie enforceAdjacency hieronder): verticaal (zelfde
 // zone/as) en horizontaal (zelfde linie) mogen over elke afstand, een diagonale wissel (andere
 // linie én andere zone) alleen naar een direct aangesloten positie (1 linie en 1 zone verschil).
+// Voor de doelpuntmelding (banner/spraak/pushmelding): een teamnaam is altijd
+// "<clubnaam> MO<leeftijd>-<team>" (bv. "Ring Pass MO18-3", "HCRB MO18-2") - dit knipt alles
+// vanaf " MO<cijfers>-<cijfers>" eraf en houdt puur de clubnaam over. Matcht de naam niet dat
+// patroon (bv. een onbekende/vrij ingevoerde tegenstandernaam), dan blijft hij ongewijzigd.
+function clubOnly(name) {
+  if (!name) return name;
+  const m = name.match(/^(.*?)\s+MO\d+-\d+\s*$/i);
+  return m ? m[1] : name;
+}
 function posAllowed(fromPos, toPos) {
   if (fromPos === toPos) return true;
   const a = PMAP[fromPos], b = PMAP[toPos];
@@ -606,19 +615,20 @@ export default function App() {
   // tegenstander, dus die moeten hier nog naar thuis/uit omgezet worden.
   function scoreLine(us, them) {
     const fx = fixtures.find(f => f.id === m.fixtureId);
-    const oppFull = m.opponent || (fx ? fx.opponent : 'onbekend');
-    const opp = oppFull.split(' ')[0] || oppFull;
-    return fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`;
+    const opp = clubOnly(m.opponent || (fx ? fx.opponent : 'onbekend'));
+    return fx && fx.home === false
+      ? `${opp} tegen ${clubName} stand is ${them} tegen ${us}`
+      : `${clubName} tegen ${opp} stand is ${us} tegen ${them}`;
   }
   function buildGoalAnnouncement(name, minute, assistName, us, them) {
     const base = `${name} scoort in de ${minute}e minuut!`;
     const withAssist = assistName ? `${base} Assist van ${assistName}.` : base;
-    return `${withAssist} Stand: ${scoreLine(us, them)}.`;
+    return `${withAssist} ${scoreLine(us, them)}.`;
   }
   // Zelfde soort feitelijke aankondiging als hierboven, maar dan voor een tegendoelpunt - geen
   // scorer/assist bekend (die worden niet ingevoerd voor de tegenstander), dus puur minuut + stand.
   function buildAgainstAnnouncement(minute, us, them) {
-    return `Tegendoelpunt in de ${minute}e minuut. Stand: ${scoreLine(us, them)}.`;
+    return `Tegendoelpunt in de ${minute}e minuut. ${scoreLine(us, them)}.`;
   }
   function ensureAudioCtx() {
     if (!audioCtxRef.current) {
@@ -1576,9 +1586,8 @@ export default function App() {
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
   // Voor de doelpuntmelding (banner/spraak/pushmelding) willen we alleen de clubnaam ("HCRB"),
-  // niet de volledige teamnaam ("HCRB MO18-2") - teamnamen zijn altijd "<club> <teamcode>", dus
-  // het eerste woord volstaat.
-  const clubName = ownTeamName.split(' ')[0] || ownTeamName;
+  // niet de volledige teamnaam ("HCRB MO18-2") - zie clubOnly hierboven.
+  const clubName = clubOnly(ownTeamName);
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : teams.filter(t => myTeams && myTeams[t.id]);

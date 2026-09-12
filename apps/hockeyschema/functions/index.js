@@ -9,6 +9,15 @@ setGlobalOptions({ maxInstances: 5 });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Zelfde regel als clubOnly in App.jsx (client) - een teamnaam is altijd "<clubnaam>
+// MO<leeftijd>-<team>" (bv. "Ring Pass MO18-3", "HCRB MO18-2"); dit knipt alles vanaf
+// " MO<cijfers>-<cijfers>" eraf voor de doelpunt-pushmelding (onGoalScored onderin dit bestand).
+function clubOnly(name) {
+  if (!name) return name;
+  const m = name.match(/^(.*?)\s+MO\d+-\d+\s*$/i);
+  return m ? m[1] : name;
+}
+
 // Creating another user's Firebase Auth account (or looking one up by email) needs the
 // Admin SDK - the client SDK can only ever affect the currently signed-in user, and
 // signing up as someone else would sign the admin themselves out of their own session.
@@ -458,18 +467,16 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   if (afterUs.length <= beforeUsCount && afterThem.length <= beforeThemCount) return;
 
   const teamId = event.params.teamId;
-  // Zelfde thuis/uit-volgorde als scoreLine in App.jsx (client) - bv. "Ring Pass 3 HCRB 29"
-  // i.p.v. kale cijfers. Vereist de eigen teamnaam, die niet in state/public zelf staat (dat
-  // heeft alleen match.opponent), vandaar deze extra losse read.
+  // Zelfde thuis/uit-volgorde en formaat als scoreLine in App.jsx (client) - bv. "Ring Pass
+  // tegen HCRB stand is 4 tegen 29". Vereist de eigen teamnaam, die niet in state/public zelf
+  // staat (dat heeft alleen match.opponent), vandaar deze extra losse read.
   const teamSnap = await admin.firestore().doc(`teams/${teamId}`).get();
-  const ownTeamName = (teamSnap.exists && teamSnap.data().name) || 'HCRB';
-  // Alleen de clubnaam ("HCRB"), niet de volledige teamnaam ("HCRB MO18-2") - zelfde regel als
-  // clubName in App.jsx (client).
-  const clubName = ownTeamName.split(' ')[0] || ownTeamName;
+  const clubName = clubOnly((teamSnap.exists && teamSnap.data().name) || 'HCRB');
   const fx = (after.fixtures || []).find(f => f.id === (after.match || {}).fixtureId);
-  const oppFull = (after.match || {}).opponent || (fx ? fx.opponent : 'onbekend');
-  const opp = oppFull.split(' ')[0] || oppFull;
-  const scoreLine = (us, them) => (fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`);
+  const opp = clubOnly((after.match || {}).opponent || (fx ? fx.opponent : 'onbekend'));
+  const scoreLine = (us, them) => (fx && fx.home === false
+    ? `${opp} tegen ${clubName} stand is ${them} tegen ${us}`
+    : `${clubName} tegen ${opp} stand is ${us} tegen ${them}`);
 
   // Zelfde feitelijke aankondiging als buildGoalAnnouncement/buildAgainstAnnouncement in App.jsx
   // (client) - hier gedupliceerd omdat deze Cloud Function de clientbundel niet importeert.
@@ -478,10 +485,10 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
     const latest = afterUs[afterUs.length - 1];
     body = `${latest.scorerName || clubName} scoort in de ${latest.minute}e minuut!`;
     if (latest.assistName) body += ` Assist van ${latest.assistName}.`;
-    body += ` Stand: ${scoreLine(latest.atUs, latest.atThem)}.`;
+    body += ` ${scoreLine(latest.atUs, latest.atThem)}.`;
   } else {
     const latest = afterThem[afterThem.length - 1];
-    body = `Tegendoelpunt in de ${latest.minute}e minuut. Stand: ${scoreLine(latest.atUs, latest.atThem)}.`;
+    body = `Tegendoelpunt in de ${latest.minute}e minuut. ${scoreLine(latest.atUs, latest.atThem)}.`;
   }
 
   const tokensSnap = await admin.firestore().collection(`teams/${teamId}/pushTokens`).get();
