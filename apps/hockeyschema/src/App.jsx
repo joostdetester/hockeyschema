@@ -421,6 +421,11 @@ function playsInQuarter(sched, q, id) {
 const DAGEN = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
 const SUP = ['\u2070', '\u00b9', '\u00b2', '\u00b3', '\u2074', '\u2075', '\u2076', '\u2077', '\u2078', '\u2079'];
 const supNum = n => String(n).split('').map(c => SUP[+c] || '').join('');
+// Subscript i.p.v. superscript, om in het schema onderscheid te houden met het aantal gespeelde
+// speelblokken hierboven (supNum) - toont hier de positievoorkeur (1 = beste positie) van de
+// speelster die op die plek staat, zie posMark verderop.
+const SUB = ['\u2080', '\u2081', '\u2082', '\u2083', '\u2084', '\u2085', '\u2086', '\u2087', '\u2088', '\u2089'];
+const subNum = n => String(n).split('').map(c => SUB[+c] || '').join('');
 const GRID_ORDER = ['LV', 'SP', 'RV', 'LH', 'MM', 'RH', 'VS', 'LA', 'LM', 'RA'];
 const CELL = 'flex:0 0 31%;min-width:0;padding:5px 7px;border-radius:var(--radius-md);text-align:center;';
 
@@ -1752,6 +1757,16 @@ export default function App() {
     Object.keys(a.on).forEach(k => { posOfA[a.on[k]] = k; });
     Object.keys(b.on).forEach(k => { posOfB[b.on[k]] = k; });
     const movers = Object.keys(a.on).filter(k => a.on[k] && posOfB[a.on[k]] && posOfB[a.on[k]] !== k).map(k => a.on[k]);
+    // Toont bij elke naam in het schema haar positievoorkeur voor die plek (subscript, bv. de 1
+    // van "beste positie" bij Team), of 🚫 als deze positie voor haar verboden is - zo valt een
+    // pijnpunt (zie painPoints hieronder) ook meteen op in het schema zelf, niet alleen in de
+    // tekst eronder.
+    const posMark = (pid, k) => {
+      const pl = pid && byId(pid);
+      if (!pl) return '';
+      if (pl.avoid && pl.avoid[k]) return ' 🚫';
+      return pl.prefs[k] ? subNum(pl.prefs[k]) : '';
+    };
     const rows = LINES.map((line, li) => ({
       key: li,
       cells: line.map(k => {
@@ -1776,8 +1791,8 @@ export default function App() {
         return {
           key: k,
           pos: PMAP[k].label,
-          nameA: (pa ? nameOf(pa) + supNum(subA) : '—') + (goesOff ? ' ◂' : moves ? ' ⇄' : ''),
-          nameB: swap ? (pb ? nameOf(pb) + supNum(subB) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
+          nameA: (pa ? nameOf(pa) + supNum(subA) + posMark(pa, k) : '—') + (goesOff ? ' ◂' : moves ? ' ⇄' : ''),
+          nameB: swap ? (pb ? nameOf(pb) + supNum(subB) + posMark(pb, k) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
           onEdit: readOnly ? undefined : () => { setEditing({ q, half: 0, pos: k }); setRelocating(null); },
           onEditB: readOnly ? undefined : () => { setEditing({ q, half: 1, pos: k }); setRelocating(null); },
           onNote: (readOnly || !pa) ? undefined : () => openNoteEditor(pa, q, 0),
@@ -1808,11 +1823,34 @@ export default function App() {
       }]
     }]);
     const injuredNow = Object.keys(m.injuries || {}).filter(id => m.injuries[id] <= 2 * q + 1).map(id => nameOf(id));
+    // Pijnpunten: waar het algoritme (bv. door weinig invallers) een speelster toch op een
+    // positie heeft moeten zetten waar ze geen voorkeur voor heeft, of - erger - die voor haar
+    // expliciet verboden is. Eén melding per unieke speelster+positie in dit kwart (1e en 2e
+    // helft samengevoegd), zodat "gaat eruit -> komt terug op dezelfde plek" niet dubbel telt.
+    const painSeen = new Set();
+    const painPoints = [];
+    [a.on, b.on].forEach(onMap => {
+      Object.keys(onMap).forEach(k => {
+        const pid = onMap[k];
+        if (!pid) return;
+        const dedupeKey = k + '|' + pid;
+        if (painSeen.has(dedupeKey)) return;
+        painSeen.add(dedupeKey);
+        const player = byId(pid);
+        if (!player) return;
+        if (player.avoid && player.avoid[k]) {
+          painPoints.push(displayFirst(player) + ' op ' + PMAP[k].label + ' — dit is voor haar verboden');
+        } else if (!player.prefs[k]) {
+          painPoints.push(displayFirst(player) + ' op ' + PMAP[k].label + ' — geen voorkeur ingevuld');
+        }
+      });
+    });
     return {
       key: q,
       title: (q + 1) + 'e kwart',
       time: fmt(q * QUARTER_MIN) + ' – ' + fmt((q + 1) * QUARTER_MIN),
       rows,
+      painPoints,
       notes: [
         {
           key: 'start',
@@ -3790,7 +3828,19 @@ export default function App() {
                   <span style={css('font-size:13px;color:var(--color-neutral-700)')}>{matchDateTimeLine}</span>
                 </div>
                 <div style={css('display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-6)')}>
-                {g.items.map(halfCard)}
+                {g.items.map(h => (
+                  <div key={h.key} style={css('display:flex;flex-direction:column;gap:6px')}>
+                    {halfCard(h)}
+                    {/* Pijnpunten: alleen in de indelingsmodus (hier), niet in de compacte
+                        wedstrijdmodus-kaart - die hergebruikt dezelfde halfCard, vandaar dat dit
+                        losstaand ernaast staat i.p.v. in halfCard zelf. */}
+                    {h.painPoints.length > 0 && (
+                      <div data-noprint="1" style={css('padding:8px 10px;border-radius:var(--radius-md);background:var(--color-accent-2-100);color:var(--color-accent-2-800);font-size:13px;line-height:1.4')}>
+                        <strong>Pijnpunten:</strong> {h.painPoints.join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
                 </div>
               </div>
               ))}
