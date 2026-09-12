@@ -163,6 +163,24 @@ const ICON_SWAP_VERT = 'M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 
 // voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
 // blijven.
 function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
+// Verboden of voorkeurscijfer voor een speler op een positie - gedeeld door het wedstrijdschema
+// (naast een naam) én de wissel-/verplaatsdialogen (in de "fit"-tekst), zodat beide exact
+// dezelfde badge tonen.
+function prefMark(p, pos) {
+  if (!p) return null;
+  if (p.avoid && p.avoid[pos]) return { kind: 'forbidden' };
+  return p.prefs[pos] ? { kind: 'pref', n: p.prefs[pos] } : null;
+}
+function markBadge(mark) {
+  if (!mark) return null;
+  if (mark.kind === 'forbidden') return <span aria-label="verboden op deze positie" style={css('margin-left:4px')}>🚫</span>;
+  return (
+    <span aria-label={`voorkeur ${mark.n} op deze plek`}
+      style={css('display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 auto;border-radius:50%;background:var(--color-accent-700);color:#fff;font-size:10px;font-weight:700;line-height:1;margin-left:4px;vertical-align:middle')}>
+      {mark.n}
+    </span>
+  );
+}
 
 // Klein rond knopje op een schemacel om een notitie toe te voegen - toont een stipje/aantal
 // zodra er al aantekeningen voor die speler in dat kwart bestaan (rood als er een werkpunt
@@ -421,11 +439,6 @@ function playsInQuarter(sched, q, id) {
 const DAGEN = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
 const SUP = ['\u2070', '\u00b9', '\u00b2', '\u00b3', '\u2074', '\u2075', '\u2076', '\u2077', '\u2078', '\u2079'];
 const supNum = n => String(n).split('').map(c => SUP[+c] || '').join('');
-// Subscript i.p.v. superscript, om in het schema onderscheid te houden met het aantal gespeelde
-// speelblokken hierboven (supNum) - toont hier de positievoorkeur (1 = beste positie) van de
-// speelster die op die plek staat, zie posMark verderop.
-const SUB = ['\u2080', '\u2081', '\u2082', '\u2083', '\u2084', '\u2085', '\u2086', '\u2087', '\u2088', '\u2089'];
-const subNum = n => String(n).split('').map(c => SUB[+c] || '').join('');
 const GRID_ORDER = ['LV', 'SP', 'RV', 'LH', 'MM', 'RH', 'VS', 'LA', 'LM', 'RA'];
 const CELL = 'flex:0 0 31%;min-width:0;padding:5px 7px;border-radius:var(--radius-md);text-align:center;';
 
@@ -1757,16 +1770,12 @@ export default function App() {
     Object.keys(a.on).forEach(k => { posOfA[a.on[k]] = k; });
     Object.keys(b.on).forEach(k => { posOfB[b.on[k]] = k; });
     const movers = Object.keys(a.on).filter(k => a.on[k] && posOfB[a.on[k]] && posOfB[a.on[k]] !== k).map(k => a.on[k]);
-    // Toont bij elke naam in het schema haar positievoorkeur voor die plek (subscript, bv. de 1
-    // van "beste positie" bij Team), of 🚫 als deze positie voor haar verboden is - zo valt een
-    // pijnpunt (zie painPoints hieronder) ook meteen op in het schema zelf, niet alleen in de
-    // tekst eronder.
-    const posMark = (pid, k) => {
-      const pl = pid && byId(pid);
-      if (!pl) return '';
-      if (pl.avoid && pl.avoid[k]) return ' 🚫';
-      return pl.prefs[k] ? subNum(pl.prefs[k]) : '';
-    };
+    // Toont bij elke naam in het schema een rond badge-icoontje met haar positievoorkeur voor
+    // die plek (bv. de 1 van "beste positie" bij Team), of 🚫 als deze positie voor haar verboden
+    // is - zo valt een pijnpunt (zie painPoints hieronder) ook meteen op in het schema zelf, niet
+    // alleen in de tekst eronder. Zie prefMark/markBadge (module-scope) - dezelfde badge wordt
+    // ook in de wissel-/verplaatsdialogen gebruikt.
+    const posMark = (pid, k) => prefMark(pid && byId(pid), k);
     const rows = LINES.map((line, li) => ({
       key: li,
       cells: line.map(k => {
@@ -1791,8 +1800,10 @@ export default function App() {
         return {
           key: k,
           pos: PMAP[k].label,
-          nameA: (pa ? nameOf(pa) + supNum(subA) + posMark(pa, k) : '—') + (goesOff ? ' ◂' : moves ? ' ⇄' : ''),
-          nameB: swap ? (pb ? nameOf(pb) + supNum(subB) + posMark(pb, k) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
+          nameA: (pa ? nameOf(pa) + supNum(subA) : '—') + (goesOff ? ' ◂' : moves ? ' ⇄' : ''),
+          nameB: swap ? (pb ? nameOf(pb) + supNum(subB) : '—') + (arrivesFromBench ? ' ▸' : ' ⇄') : '',
+          markA: posMark(pa, k),
+          markB: swap ? posMark(pb, k) : null,
           onEdit: readOnly ? undefined : () => { setEditing({ q, half: 0, pos: k }); setRelocating(null); },
           onEditB: readOnly ? undefined : () => { setEditing({ q, half: 1, pos: k }); setRelocating(null); },
           onNote: (readOnly || !pa) ? undefined : () => openNoteEditor(pa, q, 0),
@@ -1931,9 +1942,9 @@ export default function App() {
   }));
 
   const fitOf = (p, pos) => {
-    if (!p) return 'speelt hier normaal niet';
-    if (p.avoid && p.avoid[pos]) return 'verboden op deze positie';
-    return p.prefs[pos] ? 'voorkeur ' + p.prefs[pos] + ' op deze plek' : 'speelt hier normaal niet';
+    const mark = prefMark(p, pos);
+    const label = mark ? (mark.kind === 'forbidden' ? 'verboden op deze positie' : 'voorkeur ' + mark.n + ' op deze plek') : 'speelt hier normaal niet';
+    return <>{label}{markBadge(mark)}</>;
   };
   let editor = null;
   if (sched && editing && sched[2 * editing.q + editing.half]) {
@@ -1948,7 +1959,7 @@ export default function App() {
     cands.sort((a, b2) => rank(a) - rank(b2) || (ratingOf(byId(b2.id)) - ratingOf(byId(a.id))));
     editor = {
       title: (ed.q + 1) + 'e kwart · ' + PMAP[ed.pos].label,
-      current: curId ? nameOf(curId) + ' — ' + fitOf(byId(curId), ed.pos) : 'leeg',
+      current: curId ? <>{nameOf(curId)} — {fitOf(byId(curId), ed.pos)}</> : 'leeg',
       halfTabs: [0, 1].map(h => ({
         key: h, label: h === 0 ? '1e helft' : '2e helft (na 8:00)',
         go: () => setEditing({ q: ed.q, half: h, pos: ed.pos }),
@@ -1968,7 +1979,7 @@ export default function App() {
         }
         return {
           key: ci, name: displayFirst(p),
-          meta: (c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank') + ' · ' + fitOf(p, ed.pos),
+          meta: <>{c.from ? 'nu ' + PMAP[c.from].label : 'nu op de bank'} · {fitOf(p, ed.pos)}</>,
           effect,
           style: 'display:flex;flex-direction:column;gap:1px;text-align:left;width:100%;cursor:pointer;background:none;font-family:var(--font-body);padding:7px 10px;border-radius:var(--radius-md);border:1px solid var(--color-neutral-300)',
           apply: () => applySwap(b, ed.pos, c.id)
@@ -2826,8 +2837,8 @@ export default function App() {
                       style={css(noteDotStyle(cell.noteBadge))}>{cell.noteBadge ? cell.noteBadge.count : '+'}</button>
                   )}
                 </div>
-                <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}</div>
-                <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}</div>
+                <div style={css(cell.nameAStyle)} onClick={cell.onEdit}>{cell.nameA}{markBadge(cell.markA)}</div>
+                <div style={css(cell.subStyle)} onClick={cell.onEditB}>{cell.nameB}{markBadge(cell.markB)}</div>
                 {cell.onSwapHalves && (
                   <button type="button" data-noprint="1" aria-label={`${cell.pos} — 1e en 2e helft wisselen`} title="1e en 2e helft wisselen (schuift een van beiden ergens anders door, dan verandert die andere positie ook mee)"
                     onClick={e => { e.stopPropagation(); cell.onSwapHalves(); }}
