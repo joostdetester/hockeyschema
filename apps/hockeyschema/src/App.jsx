@@ -595,12 +595,21 @@ export default function App() {
   // van een wedstrijd met al gescoorde doelpunten niet meteen de hele viering afvuurt. null =
   // nog niet geïnitialiseerd voor de huidige wedstrijd.
   const prevUsGoalCountRef = useRef(null);
+  // Zelfde baseline, maar voor doelpunten van de tegenstander (team 'them') - apart bijgehouden
+  // omdat een write in goalLog altijd maar één van de twee tellingen ophoogt.
+  const prevThemGoalCountRef = useRef(null);
   const goalToastFixtureKeyRef = useRef(undefined);
   // Feitelijke aankondiging: wie scoorde, in welke minuut, en (indien ingevuld) wie de assist
   // gaf - geen verzonnen tekst meer, puur de kale feiten.
-  function buildGoalAnnouncement(name, minute, assistName) {
+  function buildGoalAnnouncement(name, minute, assistName, us, them) {
     const base = `${name} scoort in de ${minute}e minuut!`;
-    return assistName ? `${base} Assist van ${assistName}.` : base;
+    const withAssist = assistName ? `${base} Assist van ${assistName}.` : base;
+    return `${withAssist} Stand ${us}-${them}.`;
+  }
+  // Zelfde soort feitelijke aankondiging als hierboven, maar dan voor een tegendoelpunt - geen
+  // scorer/assist bekend (die worden niet ingevoerd voor de tegenstander), dus puur minuut + stand.
+  function buildAgainstAnnouncement(minute, us, them) {
+    return `Tegendoelpunt in de ${minute}e minuut. Stand ${us}-${them}.`;
   }
   function ensureAudioCtx() {
     if (!audioCtxRef.current) {
@@ -2521,29 +2530,40 @@ export default function App() {
     quarterEndWasActiveRef.current = quarterEndActive;
   }, [quarterEndActive]);
 
-  // Doelpunt-viering: cheer + gesproken aankondiging + banner, voor IEDEREEN die deze wedstrijd
-  // open heeft staan (coach én ouders/toeschouwers - m.goalLog komt voor iedereen via dezelfde
-  // publieke Firestore-sync binnen, zie de "Publieke teamdata"-listener hierboven), op elk
-  // tabblad (de banner zelf staat buiten de tab-content, zie het JSX verderop).
+  // Doelpunt-melding (eigen én tegen) - gesproken aankondiging + banner, voor IEDEREEN die deze
+  // wedstrijd open heeft staan (coach én ouders/toeschouwers - m.goalLog komt voor iedereen via
+  // dezelfde publieke Firestore-sync binnen, zie de "Publieke teamdata"-listener hierboven), op
+  // elk tabblad (de banner zelf staat buiten de tab-content, zie het JSX verderop).
   useEffect(() => {
     const usEntries = (m.goalLog || []).filter(e => e.team === 'us');
-    const count = usEntries.length;
+    const themEntries = (m.goalLog || []).filter(e => e.team === 'them');
+    const usCount = usEntries.length;
+    const themCount = themEntries.length;
     if (goalToastFixtureKeyRef.current !== m.fixtureId) {
-      // Andere wedstrijd geopend (of eerste keer geladen) - alleen de teller resetten, niet meteen
-      // vieren voor doelpunten die al eerder gescoord waren.
+      // Andere wedstrijd geopend (of eerste keer geladen) - alleen de tellers resetten, niet
+      // meteen melden voor doelpunten die al eerder gescoord waren.
       goalToastFixtureKeyRef.current = m.fixtureId;
-      prevUsGoalCountRef.current = count;
+      prevUsGoalCountRef.current = usCount;
+      prevThemGoalCountRef.current = themCount;
       return;
     }
-    if (prevUsGoalCountRef.current != null && count > prevUsGoalCountRef.current) {
+    if (prevUsGoalCountRef.current != null && usCount > prevUsGoalCountRef.current) {
       const latest = usEntries[usEntries.length - 1];
-      const phrase = buildGoalAnnouncement(latest.scorerName || ownTeamName, latest.minute, latest.assistName || null);
+      const phrase = buildGoalAnnouncement(latest.scorerName || ownTeamName, latest.minute, latest.assistName || null, latest.atUs, latest.atThem);
       announceGoal(phrase);
-      setGoalToast({ text: phrase, atUs: latest.atUs, atThem: latest.atThem });
+      setGoalToast({ kind: 'us', text: phrase });
+      if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
+      goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
+    } else if (prevThemGoalCountRef.current != null && themCount > prevThemGoalCountRef.current) {
+      const latest = themEntries[themEntries.length - 1];
+      const phrase = buildAgainstAnnouncement(latest.minute, latest.atUs, latest.atThem);
+      announceGoal(phrase);
+      setGoalToast({ kind: 'them', text: phrase });
       if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
       goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
     }
-    prevUsGoalCountRef.current = count;
+    prevUsGoalCountRef.current = usCount;
+    prevThemGoalCountRef.current = themCount;
   }, [m.goalLog, m.fixtureId]);
 
   function timerStart() {
@@ -3314,10 +3334,11 @@ export default function App() {
       {goalToast && (
         <button type="button" data-noprint="1" className="goal-toast" onClick={() => setGoalToast(null)}
           aria-label="Melding sluiten"
-          style={css('position:fixed;top:var(--space-4);left:50%;z-index:50;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 22px;border-radius:var(--radius-lg);border:none;cursor:pointer;background:var(--color-accent-700);color:#fff;box-shadow:0 8px 24px rgba(0,0,0,0.28);text-align:center')}>
-          <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.85')}>⚽ Goal voor {ownTeamName}!</span>
+          style={css('position:fixed;top:var(--space-4);left:50%;z-index:50;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 22px;border-radius:var(--radius-lg);border:none;cursor:pointer;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,0.28);text-align:center;background:' + (goalToast.kind === 'them' ? 'var(--color-neutral-800)' : 'var(--color-accent-700)'))}>
+          <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.85')}>
+            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚽ Goal voor ${ownTeamName}!`}
+          </span>
           <span style={css('font-family:var(--font-heading);font-size:20px;font-weight:600')}>{goalToast.text}</span>
-          {goalToast.atUs != null && <span style={css('font-size:14px;opacity:0.9')}>Stand: {goalToast.atUs} – {goalToast.atThem}</span>}
         </button>
       )}
 
