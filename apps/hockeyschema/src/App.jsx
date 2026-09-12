@@ -1625,7 +1625,7 @@ export default function App() {
   // accessGate tonen.
   const limitedNav = !!user && !isMyTeam;
   const tabs = [
-    ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['sc', 'Strafcorner'],
+    ['programma', 'Programma'], ['verslagen', 'Wedstrijdverslagen'], ['standen', 'Standen'], ['wedstrijd', 'Wedstrijdschema'], ['team', 'Team'], ['ouders', 'Ouders'], ['push', 'Push meldingen'], ['sc', 'Strafcorner'],
     ['notities', 'Notities'], ['historie', 'Historie'], ['afspraken', 'Afspraken'], ['teams', 'Teams'],
     // Live: verschijnt voor IEDEREEN die dit team heeft geselecteerd (ook uitgelogd) zodra de
     // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
@@ -4480,6 +4480,59 @@ export default function App() {
           ) : (
             <p className="card-body" style={css('margin:0')}>{fixtures.length ? 'Geen aankomende wedstrijden.' : 'Nog geen wedstrijden in het programma.'}</p>
           )}
+        </main>
+      )}
+
+      {tab === 'push' && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Push meldingen</h2>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>
+              Zet meldingen aan om bij elk doelpunt tijdens een live wedstrijd automatisch een pushmelding te krijgen -
+              dit werkt ook als je scherm uit staat of de site niet open hebt, in tegenstelling tot het geluid/de
+              banner die alleen werken zolang de pagina open en actief is.
+            </p>
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3)')}>
+            {typeof Notification !== 'undefined' && Notification.permission === 'granted' ? (
+              <span style={css('font-size:15px')}>✅ Meldingen staan aan op dit toestel/deze browser.</span>
+            ) : (
+              <>
+                <button type="button" className="btn btn-primary" style={css('align-self:flex-start')}
+                  onClick={async () => setPushStatus(await subscribeToPush(currentTeamId))}>🔔 Meldingen aanzetten</button>
+                {pushStatus && pushStatus !== 'granted' && (
+                  <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                    {pushStatus === 'denied'
+                      ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
+                      : 'Wordt op dit toestel/deze browser niet ondersteund - zie de iPhone-stappen hieronder als je op een iPhone/iPad zit.'}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div className="card-title">Android (Chrome)</div>
+            <ol style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.7')}>
+              <li>Open deze site in Chrome op je telefoon.</li>
+              <li>Tik hierboven op "Meldingen aanzetten".</li>
+              <li>Kies "Toestaan" zodra Chrome om toestemming vraagt.</li>
+              <li>Klaar - je krijgt nu automatisch een melding bij elk doelpunt, ook met het scherm uit.</li>
+            </ol>
+          </div>
+
+          <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+            <div className="card-title">iPhone/iPad (Safari)</div>
+            <ol style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.7')}>
+              <li>Open deze site in Safari (moet Safari zijn - Apple staat pushmeldingen alleen toe vanuit Safari, niet vanuit Chrome of een andere browser-app).</li>
+              <li>Tik op het deel-icoon (het vierkantje met de pijl omhoog) onderin de balk.</li>
+              <li>Kies "Zet op beginscherm".</li>
+              <li>Open de site daarna via het nieuwe icoon op je beginscherm - <strong>niet meer via Safari zelf</strong>. Dit is nodig omdat Apple pushmeldingen alleen toestaat vanuit een op deze manier geïnstalleerde site, niet in de gewone browser.</li>
+              <li>Tik hierboven op "Meldingen aanzetten" en kies "Toestaan".</li>
+            </ol>
+            <p className="card-body" style={css('margin:0')}>Werkt alleen op iOS/iPadOS 16.4 of nieuwer.</p>
+          </div>
         </main>
       )}
 
