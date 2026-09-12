@@ -3138,12 +3138,45 @@ export default function App() {
   // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
   // afgelopen wedstrijd, via de wedstrijd zelf) dezelfde regel tonen — daarom home/opponentName
   // als losse parameters i.p.v. rechtstreeks scoreFxObj/m te gebruiken.
+  // Spelerskaartjes (zie playerCards.js) bij een logregel: bij een eigen doelpunt de schutter (en
+  // assist) via hun speler-id (exact, geen giswerk); bij vrije tekst (Extra live commentaar) door
+  // te zoeken naar een herkende voornaam in de tekst - alleen spelers mét kaartje leveren een
+  // plaatje op, een niet-herkende of kaartloze naam levert gewoon niets extra's op.
+  function cardsForNote(text) {
+    if (!text) return [];
+    const found = [];
+    const seen = new Set();
+    players.forEach(p => {
+      if (seen.has(p.id) || !p.first) return;
+      const card = cardFor(p.first);
+      if (!card) return;
+      const re = new RegExp('\\b' + p.first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      if (re.test(text)) { found.push({ id: p.id, name: p.first, card }); seen.add(p.id); }
+    });
+    return found;
+  }
+  function logEntryCards(g) {
+    if (g.team === 'note') return cardsForNote(g.text);
+    if (g.team !== 'us') return [];
+    const cards = [];
+    const scorer = g.scorerId && byId(g.scorerId);
+    if (scorer) { const card = cardFor(scorer.first); if (card) cards.push({ id: scorer.id, name: scorer.first, card }); }
+    const assist = g.assistId && byId(g.assistId);
+    if (assist) { const card = cardFor(assist.first); if (card) cards.push({ id: assist.id, name: assist.first, card }); }
+    return cards;
+  }
   function formatMatchLogEntry(g, home, opponentName) {
-    if (g.team === 'note') return g.minute + 'e minuut: ' + g.text;
+    const cards = logEntryCards(g);
+    const cardRow = cards.length > 0 && (
+      <span style={css('display:inline-flex;gap:4px;vertical-align:middle;margin-left:8px')}>
+        {cards.map(c => <img key={c.id} src={c.card} alt="" title={c.name} style={css('height:26px;width:auto;border-radius:4px;object-fit:cover;vertical-align:middle')} />)}
+      </span>
+    );
+    if (g.team === 'note') return <>{g.minute}e minuut: {g.text}{cardRow}</>;
     const first = home ? g.atUs : g.atThem;
     const second = home ? g.atThem : g.atUs;
     if (g.team === 'us') {
-      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + (g.assistName ? ' (assist: ' + g.assistName + ')' : '') + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
+      return <>{g.minute}e minuut: {g.scorerName || ownTeamName}{g.assistName ? ' (assist: ' + g.assistName + ')' : ''} scoort voor {ownTeamName} — {first}–{second}{g.remark ? '. ' + g.remark : ''}{cardRow}</>;
     }
     return g.minute + 'e minuut: ' + opponentName + ' scoort — ' + first + '–' + second;
   }

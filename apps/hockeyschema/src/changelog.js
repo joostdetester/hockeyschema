@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.8.0',
+    date: '2026-09-12',
+    changes: [
+      'Scoreverloop en wedstrijdverslagen: spelerskaartje(s) worden er nu automatisch bij getoond - bij een doelpunt van de schutter (en assist als die er is), en bij Extra live commentaar van elke speelster wiens naam in de tekst wordt herkend (bv. "Mirre is lekker aan het verdedigen"). Alleen spelers mét een kaartje leveren een plaatje op.',
+    ],
+  },
+  {
     version: '1.7.0',
     date: '2026-09-12',
     changes: [
