@@ -1,5 +1,6 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
+const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
 
@@ -435,4 +436,44 @@ exports.scheduledLisaRefresh = onSchedule({
       console.error('scheduledLisaRefresh: programma mislukt voor team ' + teamId, err);
     }
   }
+});
+
+// Pushmelding bij een eigen doelpunt - werkt ook met vergrendeld scherm/op de achtergrond
+// (i.t.t. de in-pagina banner/geluid/spraak in App.jsx, die alleen werken zolang de pagina
+// open/actief is). state/public wordt door de coach-client altijd in zijn geheel overschreven
+// (zie de "Publieke teamdata"-sync in App.jsx) - elk nieuw doelpunt komt dus ook hier als write
+// binnen. Dezelfde feitelijke aankondiging als buildGoalAnnouncement in App.jsx (client), hier
+// gedupliceerd omdat deze Cloud Function de clientbundel niet importeert.
+exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async event => {
+  const before = event.data && event.data.before && event.data.before.exists ? event.data.before.data() : {};
+  const after = event.data && event.data.after && event.data.after.exists ? event.data.after.data() : null;
+  if (!after) return;
+  const beforeUsCount = (((before.match || {}).goalLog) || []).filter(e => e.team === 'us').length;
+  const afterUs = (((after.match || {}).goalLog) || []).filter(e => e.team === 'us');
+  if (afterUs.length <= beforeUsCount) return;
+
+  const teamId = event.params.teamId;
+  const latest = afterUs[afterUs.length - 1];
+  let body = `${latest.scorerName || 'HCRB'} scoort in de ${latest.minute}e minuut!`;
+  if (latest.assistName) body += ` Assist van ${latest.assistName}.`;
+
+  const tokensSnap = await admin.firestore().collection(`teams/${teamId}/pushTokens`).get();
+  if (tokensSnap.empty) return;
+  const tokens = tokensSnap.docs.map(d => d.id);
+
+  const res = await admin.messaging().sendEachForMulticast({
+    tokens,
+    notification: { title: '⚽ Doelpunt!', body },
+  });
+
+  // Ruimt tokens op die niet meer bestaan (uitgeschreven browser, verlopen registratie e.d.) -
+  // anders blijft pushTokens onbeperkt groeien met dode tokens die bij elk volgend doelpunt
+  // toch weer een nutteloze verstuurpoging kosten.
+  const deletions = [];
+  res.responses.forEach((r, i) => {
+    if (!r.success && r.error && r.error.code === 'messaging/registration-token-not-registered') {
+      deletions.push(admin.firestore().doc(`teams/${teamId}/pushTokens/${tokens[i]}`).delete());
+    }
+  });
+  await Promise.all(deletions);
 });

@@ -112,6 +112,10 @@ jobs:
       # Each Firebase project alias has its own Vite mode/.env file (see
       # apps/hockeyschema/package.json and .env.development/.env.acceptatie/
       # .env.production) - build with the one matching this run's target.
+      # VITE_BUILD_NUMBER feeds the on-page version footer (see vite.config.js) - this workflow's
+      # own run number, so every deploy on every branch gets its own increasing, traceable
+      # version without ever having to commit a version bump back to a (possibly
+      # branch-protected) branch.
       - name: Build
         run: |
           case "${{ needs.resolve.outputs.firebase_project }}" in
@@ -119,6 +123,8 @@ jobs:
             acceptatie) npm run build:acceptatie ;;
             productie) npm run build ;;
           esac
+        env:
+          VITE_BUILD_NUMBER: ${{ github.run_number }}
 
       # FIREBASE_TOKEN comes from `firebase login:ci` (deprecated by Google
       # in favor of a service account + GOOGLE_APPLICATION_CREDENTIALS, but

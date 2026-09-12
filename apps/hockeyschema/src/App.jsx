@@ -8,6 +8,7 @@ import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
+import { subscribeToPush } from './push.js';
 
 function css(str) {
   const obj = {};
@@ -538,6 +539,11 @@ export default function App() {
   // passief meekijkt telt daar niet voor. soundUnlocked (per paginabezoek, niet onthouden) volgt
   // of die tik al is gegeven; zie unlockSound en de knop ernaast in de header.
   const [soundUnlocked, setSoundUnlocked] = useState(false);
+  // Resultaat van de laatste subscribeToPush-poging ('granted'/'denied'/'unsupported'/null) -
+  // puur om na de klik op "Meldingen aanzetten" even terug te melden wat er gebeurde (bv. de
+  // gebruiker weigerde toestemming, of dit toestel/deze browser ondersteunt het niet - zie de
+  // iOS-kanttekening in push.js).
+  const [pushStatus, setPushStatus] = useState(null);
   const [scorerPicker, setScorerPicker] = useState(false);
   const [scorerSelected, setScorerSelected] = useState(null);
   // Wie de assist gaf bij dit doelpunt - optioneel, en kan nooit gelijk zijn aan scorerSelected
@@ -3351,6 +3357,23 @@ export default function App() {
                   <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
                     onClick={unlockSound}>🔊 Geluid aanzetten</button>
                 )}
+                {/* Écht een pushmelding (werkt ook met het scherm uit/in de broekzak, i.t.t. het
+                    geluid hierboven dat alleen werkt zolang de pagina open/actief is) - zie
+                    push.js voor de opzet en de iOS-beperking (alleen als "app op beginscherm"
+                    geïnstalleerd, niet in gewoon Safari). typeof-check omdat Notification in
+                    sommige (oudere) browsers niet bestaat. */}
+                {m.liveOpened && typeof Notification !== 'undefined' && Notification.permission !== 'granted' && (
+                  <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
+                    title="Werkt ook met vergrendeld scherm. Op iPhone: zet deze site eerst via het deelmenu op je beginscherm, anders staat Apple dit niet toe."
+                    onClick={async () => setPushStatus(await subscribeToPush(currentTeamId))}>🔔 Meldingen aanzetten</button>
+                )}
+                {pushStatus && pushStatus !== 'granted' && (
+                  <span style={css('font-size:12px;color:var(--color-neutral-700);max-width:220px')}>
+                    {pushStatus === 'denied'
+                      ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
+                      : 'Wordt hier niet ondersteund - op iPhone: zet de site eerst op je beginscherm.'}
+                  </span>
+                )}
                 {isMyTeam && (
                   <button type="button" className={matchMode ? 'btn btn-secondary' : 'btn btn-primary'} style={css('font-size:13px;padding:5px 10px')}
                     onClick={() => setMatchMode(v => !v)}>{matchMode ? 'Wedstrijdmodus uit' : 'Wedstrijdmodus'}</button>
@@ -4815,6 +4838,8 @@ export default function App() {
       )}
 
       </>)}
+
+      <div data-noprint="1" style={css('text-align:center;padding:var(--space-6) 0 0;font-size:11px;color:var(--color-neutral-500)')}>v{__APP_VERSION__}</div>
     </div>
   );
 }
