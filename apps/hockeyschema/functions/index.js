@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
 
@@ -248,5 +249,190 @@ exports.refreshTeamAttendance = onCall(async (request) => {
   const updatedAt = new Date().toISOString();
   await admin.firestore().doc(`teams/${teamId}/state/attendance`).set({ byFixtureKey: byKey, updatedAt });
 
+  // Het veldnummer zelf (i.t.t. de rest van deze cache: meeting_time en vooral de per-speler
+  // presence-status van minderjarigen) mag iedereen zien - dat hoort dus niet thuis in
+  // state/attendance hierboven (team-only, zie firestore.rules), maar in state/public.fixtures
+  // (al publiek leesbaar, zie de Programma-tabel). Alleen de wedstrijden die we hierboven ook
+  // echt gevonden hebben worden bijgewerkt - een gespeelde wedstrijd (niet meer in `upcoming`)
+  // of een oefenwedstrijd (niet in dit programma) behoudt gewoon zijn bestaande/lege veld.
+  const publicRef = admin.firestore().doc(`teams/${teamId}/state/public`);
+  const publicSnap = await publicRef.get();
+  if (publicSnap.exists) {
+    const existingFixtures = (publicSnap.data() || {}).fixtures || [];
+    const updatedFixtures = existingFixtures.map(fx => {
+      const key = fx.date + '|' + fx.opponent;
+      const hit = byKey[key];
+      return hit && hit.field ? { ...fx, veld: hit.field } : fx;
+    });
+    await publicRef.set({ fixtures: updatedFixtures }, { merge: true });
+  }
+
   return { byFixtureKey: byKey, updatedAt };
+});
+
+// Zelfde regel als shortPouleName in App.jsx (client) - een fixture's f.competitie-veld moet
+// exact hierop matchen, anders verbergt de Programma-competitiefilter 'm stilzwijgend.
+function shortPouleName(name) {
+  return name ? name.replace(/^(Meisjes|Jongens|Dames|Heren)\s+[A-Za-z]*\d+\s+/i, '').trim() : null;
+}
+
+// DD-MM-YYYY (matches_upcoming_round) of een ISO-timestamp (match_results) naar YYYY-MM-DD.
+function toIsoDate(d) {
+  if (!d) return '';
+  if (d.includes('T')) return d.slice(0, 10);
+  const [dd, mo, y] = d.split('-');
+  return (dd && mo && y) ? `${y}-${mo}-${dd}` : '';
+}
+
+// Ververst de stand voor een team - zelfde publieke "duda"-koppeling/endpoint als
+// refreshTeamStandings hierboven, maar aanroepbaar vanuit scheduledLisaRefresh onderaan (geen
+// HttpsError-afhandeling nodig, dat is aan de caller daar).
+async function refreshStandingsForTeam(teamId, clubDudaId, lisaTeamId, authHeader) {
+  const res = await fetch(`https://api.lisahockey.nl/v1/duda/${clubDudaId}/teams/${lisaTeamId}/poules`, { headers: { authorization: authHeader, accept: '*/*' } });
+  if (!res.ok) throw new Error('poules http ' + res.status);
+  const data = await res.json();
+  const standings = data.teams || [];
+  if (!standings.length) return;
+  await admin.firestore().doc(`teams/${teamId}/state/public`).set({ standings, standingsUpdatedAt: new Date().toISOString() }, { merge: true });
+}
+
+// Ververst voor een team: het volledige competitieprogramma (state/public.pouleSchedule, ook
+// wedstrijden waar dit team niet bij betrokken is) en de eigen fixtures - poort van
+// importLisaMatches()/refreshPouleSchedule() in src/App.jsx naar de server, zodat dit ook zonder
+// dat een coach ooit zelf op die knoppen klikt s nachts bijgewerkt blijft (zie
+// scheduledLisaRefresh onderaan). Zelfde publieke "duda"-koppeling (authHeader) als de client -
+// geen personal mijn.lisahockey.nl-token nodig.
+async function refreshFixturesForTeam(teamId, clubDudaId, lisaTeamId, authHeader, ownTeamName) {
+  const headers = { authorization: authHeader, accept: '*/*' };
+  const base = `https://api.lisahockey.nl/v1/duda/${clubDudaId}/teams/${lisaTeamId}`;
+  const [upcomingRes, resultsRes, poulesRes] = await Promise.all([
+    fetch(`${base}/matches_upcoming_round`, { headers }),
+    fetch(`${base}/match_results`, { headers }),
+    fetch(`${base}/poules`, { headers }),
+  ]);
+  const upcoming = upcomingRes.ok ? (await upcomingRes.json()).matches_upcoming_round || [] : [];
+  const results = resultsRes.ok ? (await resultsRes.json()).match_results || [] : [];
+  const poulesData = poulesRes.ok ? (await poulesRes.json()).teams || [] : [];
+  const pName = ((poulesData.find(p => p.is_current) || poulesData[0] || {}).poule_name) || '';
+  const competitie = shortPouleName(pName);
+
+  // Het volledige competitieprogramma (alle teams, upcoming + gespeeld) voor de "Bekijk hele
+  // competitie"-tabel op Programma.
+  const byKey = {};
+  upcoming.forEach(m => {
+    const dateKey = toIsoDate(m.date);
+    byKey[dateKey + '|' + m.home_team_name + '|' + m.away_team_name] = {
+      id: 'u' + dateKey + m.home_team_name + m.away_team_name,
+      home: m.home_team_name, away: m.away_team_name, date: dateKey, played: false,
+    };
+  });
+  results.forEach(r => {
+    const dateKey = toIsoDate(r.date);
+    byKey[dateKey + '|' + r.home_team_name + '|' + r.opponent_team_name] = {
+      id: 'r' + dateKey + r.home_team_name + r.opponent_team_name,
+      home: r.home_team_name, away: r.opponent_team_name, date: dateKey,
+      played: true, homeScore: r.home_score, awayScore: r.away_score,
+    };
+  });
+  const pouleSchedule = Object.values(byKey).sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+
+  const publicRef = admin.firestore().doc(`teams/${teamId}/state/public`);
+  const publicSnap = await publicRef.get();
+  const existingFixtures = publicSnap.exists ? ((publicSnap.data() || {}).fixtures || []) : [];
+  const idxByKey = {};
+  existingFixtures.forEach((fx, i) => { idxByKey[fx.date + '|' + fx.opponent] = i; });
+  const next = existingFixtures.slice();
+  const added = [];
+  let fixturesChanged = false;
+
+  // 1. Eigen aankomende wedstrijden (matches_upcoming_round) - zelfde als importLisaMatches().
+  upcoming.filter(m => m.is_selected_team).forEach(m => {
+    const dateKey = toIsoDate(m.date);
+    const opponent = m.home_team_is_current ? m.away_team_name : m.home_team_name;
+    const key = dateKey + '|' + opponent;
+    const row = { time: m.time || '', home: !!m.home_team_is_current, competitie };
+    const idx = idxByKey[key];
+    if (idx == null) {
+      added.push({
+        id: 'lisaimp' + dateKey.replace(/-/g, '') + '_' + Date.now() + Math.random().toString(36).slice(2, 6),
+        date: dateKey, opponent, friendly: false, ...row,
+      });
+      fixturesChanged = true;
+    } else if (next[idx].time !== row.time || next[idx].home !== row.home || next[idx].competitie !== row.competitie) {
+      next[idx] = { ...next[idx], ...row };
+      fixturesChanged = true;
+    }
+  });
+
+  // 2. Eigen gespeelde wedstrijden (match_results) - LISA is leidend, zie de Eindstand-regel
+  // (!f.friendly && f.played) op Programma.
+  results.filter(r => r.is_selected_team).forEach(r => {
+    const isHome = r.home_team_name === ownTeamName;
+    const opponent = isHome ? r.opponent_team_name : r.home_team_name;
+    const dateKey = toIsoDate(r.date);
+    const gf = isHome ? r.home_score : r.away_score;
+    const ga = isHome ? r.away_score : r.home_score;
+    const gfStr = gf == null ? '' : String(gf), gaStr = ga == null ? '' : String(ga);
+    const key = dateKey + '|' + opponent;
+    const idx = idxByKey[key];
+    if (idx == null) {
+      added.push({
+        id: 'lisares' + dateKey.replace(/-/g, '') + '_' + Date.now() + Math.random().toString(36).slice(2, 6),
+        date: dateKey, time: '', opponent, home: isHome, friendly: false, gf: gfStr, ga: gaStr,
+        ...(competitie ? { competitie } : {}),
+      });
+      fixturesChanged = true;
+    } else {
+      const needsCompetitie = competitie && !next[idx].friendly && !next[idx].competitie;
+      if (next[idx].gf !== gfStr || next[idx].ga !== gaStr || needsCompetitie) {
+        next[idx] = { ...next[idx], gf: gfStr, ga: gaStr, ...(needsCompetitie ? { competitie } : {}) };
+        fixturesChanged = true;
+      }
+    }
+  });
+
+  const patch = { pouleName: pName, pouleSchedule, pouleScheduleUpdatedAt: new Date().toISOString() };
+  if (fixturesChanged) patch.fixtures = next.concat(added);
+  await publicRef.set(patch, { merge: true });
+}
+
+// Elke nacht (03:00 Europe/Amsterdam) automatisch programma/competitieprogramma/stand
+// verversen voor elk team met een clubwebsite-koppeling (config/lisa) - zodat een team waarvan
+// de coach nooit zelf op "Importeer wedstrijden"/"Haal hele competitie op"/"Ververs stand" klikt
+// (zie bijvoorbeeld MO14-2, leeg gebleven, 2026-09-06) toch niet permanent leeg/verouderd
+// blijft. Gebruikt dezelfde publieke "duda"-koppeling (config/lisa.authHeader) als de losse
+// knoppen, dus geen personal mijn.lisahockey.nl-token nodig - werkt daarom voor ieder gekoppeld
+// team. Ververst bewust niet de aanwezigheid/veldnummers (refreshTeamAttendance): dat vereist
+// wel het admin-only mijn.lisahockey.nl-token en is een apart, kleiner onderdeel.
+exports.scheduledLisaRefresh = onSchedule({
+  schedule: '0 3 * * *',
+  timeZone: 'Europe/Amsterdam',
+  timeoutSeconds: 540,
+}, async () => {
+  const teamsSnap = await admin.firestore().collection('teams').get();
+  for (const teamDoc of teamsSnap.docs) {
+    const teamId = teamDoc.id;
+    let lisaSnap;
+    try {
+      lisaSnap = await admin.firestore().doc(`teams/${teamId}/config/lisa`).get();
+    } catch (err) {
+      console.error('scheduledLisaRefresh: config/lisa niet leesbaar voor team ' + teamId, err);
+      continue;
+    }
+    if (!lisaSnap.exists) continue;
+    const { clubDudaId, teamId: lisaTeamId, authHeader } = lisaSnap.data();
+    if (!clubDudaId || !lisaTeamId || !authHeader) continue;
+    const ownTeamName = (teamDoc.data() || {}).name || '';
+
+    try {
+      await refreshStandingsForTeam(teamId, clubDudaId, lisaTeamId, authHeader);
+    } catch (err) {
+      console.error('scheduledLisaRefresh: stand mislukt voor team ' + teamId, err);
+    }
+    try {
+      await refreshFixturesForTeam(teamId, clubDudaId, lisaTeamId, authHeader, ownTeamName);
+    } catch (err) {
+      console.error('scheduledLisaRefresh: programma mislukt voor team ' + teamId, err);
+    }
+  }
 });

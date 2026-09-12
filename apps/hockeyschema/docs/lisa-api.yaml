@@ -649,6 +649,133 @@ paths:
                           description: Aanwezigheidsstatus, bv. "present"/"absent"/"unknown".
                 additionalProperties: true
 
+  /api/v1/my/clubs/{clubId}/selects/teams/{teamId}/poules:
+    get:
+      tags: [My - Wedstrijden]
+      summary: Poule(s) van een team (voor het "hele competitieprogramma", niet alleen de stand)
+      description: >
+        Bevestigd via een live HAR-capture 2026-09-06 (mijn.lisahockey.nl/teams/{teamId} pagina
+        van de coach). Gebruikt door refreshPouleSchedule() in functions/index.js om pouleId op
+        te zoeken voor de matches-endpoint hieronder.
+      operationId: getTeamPoulesSelect
+      x-source: apps/hockeyschema/functions/index.js
+      parameters:
+        - $ref: '#/components/parameters/clubId'
+        - name: teamId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, format: uuid }
+                    name: { type: string, example: "Meisjes O18 voorcompetitie 4e klasse" }
+                    is_default: { type: boolean }
+                    hide_rankings: { type: boolean }
+                    hide_results: { type: boolean }
+
+  /api/v1/my/clubs/{clubId}/teams/{teamId}/poules/{pouleId}/matches:
+    get:
+      tags: [My - Wedstrijden]
+      summary: Programma van de hele poule (niet alleen wedstrijden van dit team)
+      description: >
+        Bevestigd via een live HAR-capture 2026-09-06, maar alleen met show_all=false (wat de
+        site zelf standaard gebruikt) - dat gaf alleen de eigen eerstvolgende wedstrijd van dit
+        team terug. show_all=true, zoals refreshPouleSchedule() in functions/index.js gebruikt,
+        is nog NIET los bevestigd - alleen afgeleid uit de parameternaam en uit hoe
+        matches/results hieronder zich al gedraagt (die geeft wél al bevestigd de hele poule
+        terug, incl. wedstrijden zonder dit team).
+      operationId: getPouleMatches
+      x-source: apps/hockeyschema/functions/index.js
+      parameters:
+        - $ref: '#/components/parameters/clubId'
+        - name: teamId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: pouleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: show_all
+          in: query
+          schema: { type: boolean }
+          description: Vermoedelijk "alle teams in de poule" i.p.v. alleen dit team - zie boven.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, format: uuid }
+                    home_team_name: { type: string }
+                    home_team_id: { type: string, format: uuid }
+                    away_team_name: { type: string }
+                    away_team_id: { type: string, format: uuid }
+                    start: { type: string, format: date-time }
+
+  /api/v1/my/clubs/{clubId}/teams/{teamId}/matches/results:
+    get:
+      tags: [My - Wedstrijden]
+      summary: Gespeelde wedstrijden van de hele poule, incl. uitslag
+      description: >
+        Bevestigd via een live HAR-capture 2026-09-06 - de response bevatte wedstrijden waar dit
+        team part noch deel van was (bv. "HUDITO MO18-3 - Ring Pass MO18-3"), dus dit is al
+        poule-breed zonder show_all-achtige parameter.
+      operationId: getTeamMatchResults
+      x-source: apps/hockeyschema/functions/index.js
+      parameters:
+        - $ref: '#/components/parameters/clubId'
+        - name: teamId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        match_id: { type: string, format: uuid }
+                        home_team:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string }
+                            club_id: { type: string, format: uuid }
+                        away_team:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string }
+                            club_id: { type: string, format: uuid }
+                        date: { type: string, format: date-time }
+                        home_score: { type: integer, nullable: true }
+                        away_score: { type: integer, nullable: true }
+                        home_penalty: { type: integer, nullable: true }
+                        away_penalty: { type: integer, nullable: true }
+                        result_status:
+                          type: string
+                          description: Bv. "awayTeamWon".
+
   /v1/duda/{clubDudaId}/teams/{teamId}/poules:
     get:
       tags: [Club (publiek/duda)]
