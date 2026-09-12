@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.7.0',
+    date: '2026-09-12',
+    changes: [
+      'Bugfix: de vorige cache-fix (index.html niet meer cachen) zette per ongeluk óók de langdurige caching van de gebouwde bestanden (assets) uit, doordat de brede regel na de specifieke regels stond - Firebase Hosting past bij een botsing de láátste regel toe. Volgorde omgedraaid: de gebouwde bestanden en spelerskaartjes worden weer lang gecachet, alleen de hoofdpagina zelf niet.',
+    ],
+  },
+  {
     version: '1.6.0',
     date: '2026-09-12',
     changes: [
