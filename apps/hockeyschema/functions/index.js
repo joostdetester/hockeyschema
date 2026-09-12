@@ -477,18 +477,32 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   const scoreLine = (us, them) => (fx && fx.home === false
     ? `${opp} tegen ${clubName} stand is ${them} tegen ${us}`
     : `${clubName} tegen ${opp} stand is ${us} tegen ${them}`);
+  // Zelfde wisseling-in-de-wedstrijd-tekst als leadPrefix in App.jsx (client) - "before" is de
+  // stand vlak vóór dit doelpunt.
+  const leadPrefix = (beforeUs, beforeThem, scorerIsUs) => {
+    const scorerName = scorerIsUs ? clubName : opp;
+    if (beforeUs === beforeThem) return `${scorerName} komt op voorsprong! `;
+    const scorerWasLeading = scorerIsUs ? beforeUs > beforeThem : beforeThem > beforeUs;
+    if (scorerWasLeading) return `${scorerName} loopt uit! `;
+    const afterUsScore = beforeUs + (scorerIsUs ? 1 : 0);
+    const afterThemScore = beforeThem + (scorerIsUs ? 0 : 1);
+    if (afterUsScore === afterThemScore) return `${scorerName} maakt gelijk! `;
+    return `${scorerName} brengt de achterstand terug tot ${Math.abs(afterUsScore - afterThemScore)}! `;
+  };
 
   // Zelfde feitelijke aankondiging als buildGoalAnnouncement/buildAgainstAnnouncement in App.jsx
   // (client) - hier gedupliceerd omdat deze Cloud Function de clientbundel niet importeert.
   let body;
   if (afterUs.length > beforeUsCount) {
     const latest = afterUs[afterUs.length - 1];
-    body = `${latest.scorerName || clubName} scoort in de ${latest.minute}e minuut!`;
+    body = leadPrefix(latest.atUs - 1, latest.atThem, true);
+    body += `${latest.scorerName || clubName} scoort in de ${latest.minute}e minuut!`;
     if (latest.assistName) body += ` Assist van ${latest.assistName}.`;
     body += ` ${scoreLine(latest.atUs, latest.atThem)}.`;
   } else {
     const latest = afterThem[afterThem.length - 1];
-    body = `Tegendoelpunt in de ${latest.minute}e minuut. ${scoreLine(latest.atUs, latest.atThem)}.`;
+    body = leadPrefix(latest.atUs, latest.atThem - 1, false);
+    body += `Tegendoelpunt in de ${latest.minute}e minuut. ${scoreLine(latest.atUs, latest.atThem)}.`;
   }
 
   const tokensSnap = await admin.firestore().collection(`teams/${teamId}/pushTokens`).get();

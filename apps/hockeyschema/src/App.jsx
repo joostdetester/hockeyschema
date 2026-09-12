@@ -613,22 +613,41 @@ export default function App() {
   // Noemt de stand met teamnamen erbij, in dezelfde thuis/uit-volgorde als scheduleTitle
   // hieronder (bv. "Ring Pass 3 HCRB 29") i.p.v. kale cijfers - "us"/"them" zijn altijd eigen/
   // tegenstander, dus die moeten hier nog naar thuis/uit omgezet worden.
+  function opponentName() {
+    const fx = fixtures.find(f => f.id === m.fixtureId);
+    return clubOnly(m.opponent || (fx ? fx.opponent : 'onbekend'));
+  }
   function scoreLine(us, them) {
     const fx = fixtures.find(f => f.id === m.fixtureId);
-    const opp = clubOnly(m.opponent || (fx ? fx.opponent : 'onbekend'));
+    const opp = opponentName();
     return fx && fx.home === false
       ? `${opp} tegen ${clubName} stand is ${them} tegen ${us}`
       : `${clubName} tegen ${opp} stand is ${us} tegen ${them}`;
   }
+  // Wisseling-in-de-wedstrijd-tekst die vóór de doelpunt-info komt: wie er nu voor komt te
+  // staan, uitloopt, gelijkmaakt, of de achterstand verkleint - "before" is de stand vlak vóór
+  // dít doelpunt (dus altijd exact 1 lager voor de score van de kant die zojuist scoorde).
+  function leadPrefix(beforeUs, beforeThem, scorerIsUs) {
+    const scorerName = scorerIsUs ? clubName : opponentName();
+    if (beforeUs === beforeThem) return `${scorerName} komt op voorsprong! `;
+    const scorerWasLeading = scorerIsUs ? beforeUs > beforeThem : beforeThem > beforeUs;
+    if (scorerWasLeading) return `${scorerName} loopt uit! `;
+    const afterUs = beforeUs + (scorerIsUs ? 1 : 0);
+    const afterThem = beforeThem + (scorerIsUs ? 0 : 1);
+    if (afterUs === afterThem) return `${scorerName} maakt gelijk! `;
+    return `${scorerName} brengt de achterstand terug tot ${Math.abs(afterUs - afterThem)}! `;
+  }
   function buildGoalAnnouncement(name, minute, assistName, us, them) {
-    const base = `${name} scoort in de ${minute}e minuut!`;
+    const prefix = leadPrefix(us - 1, them, true);
+    const base = `${prefix}${name} scoort in de ${minute}e minuut!`;
     const withAssist = assistName ? `${base} Assist van ${assistName}.` : base;
     return `${withAssist} ${scoreLine(us, them)}.`;
   }
   // Zelfde soort feitelijke aankondiging als hierboven, maar dan voor een tegendoelpunt - geen
   // scorer/assist bekend (die worden niet ingevoerd voor de tegenstander), dus puur minuut + stand.
   function buildAgainstAnnouncement(minute, us, them) {
-    return `Tegendoelpunt in de ${minute}e minuut. ${scoreLine(us, them)}.`;
+    const prefix = leadPrefix(us, them - 1, false);
+    return `${prefix}Tegendoelpunt in de ${minute}e minuut. ${scoreLine(us, them)}.`;
   }
   function ensureAudioCtx() {
     if (!audioCtxRef.current) {
