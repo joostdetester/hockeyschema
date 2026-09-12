@@ -8,7 +8,7 @@ import { useTeam } from './TeamContext.jsx';
 import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
-import { subscribeToPush } from './push.js';
+import { subscribeToPush, unsubscribeFromPush } from './push.js';
 
 function css(str) {
   const obj = {};
@@ -543,16 +543,36 @@ export default function App() {
   // op elk tabblad, zodra de nieuwe stand binnenkomt.
   const [goalToast, setGoalToast] = useState(null);
   const goalToastTimeoutRef = useRef(null);
-  // Mobiele browsers (vooral iOS Safari) staan speechSynthesis/audio pas toe ná een directe tik
-  // van de kijker op DIE pagina - een doelpunt dat via Firestore binnenkomt terwijl iemand alleen
-  // passief meekijkt telt daar niet voor. soundUnlocked (per paginabezoek, niet onthouden) volgt
-  // of die tik al is gegeven; zie unlockSound en de knop ernaast in de header.
-  const [soundUnlocked, setSoundUnlocked] = useState(false);
   // Resultaat van de laatste subscribeToPush-poging ('granted'/'denied'/'unsupported'/null) -
   // puur om na de klik op "Meldingen aanzetten" even terug te melden wat er gebeurde (bv. de
   // gebruiker weigerde toestemming, of dit toestel/deze browser ondersteunt het niet - zie de
   // iOS-kanttekening in push.js).
   const [pushStatus, setPushStatus] = useState(null);
+  // Of dit toestel/deze browser voor dit team is aangemeld voor pushmeldingen - puur lokaal
+  // bewaard (localStorage), want geen enkele client mag pushTokens teruglezen (zie
+  // firestore.rules) om te checken of er al een token voor dit toestel bestaat. Browsers kunnen
+  // een eenmaal gegeven Notification-toestemming zelf niet intrekken vanuit de pagina (alleen de
+  // gebruiker, via de site-instellingen) - "uitzetten" hier betekent dus: het token bij dit team
+  // verwijderen zodat onGoalScored er niets meer naartoe stuurt, niet de browserpermissie zelf
+  // aanraken.
+  const [pushSubscribed, setPushSubscribed] = useState(() => {
+    try { return window.localStorage.getItem('hockeyschema.pushSubscribed') === '1'; } catch { return false; }
+  });
+  async function togglePush() {
+    if (pushSubscribed) {
+      await unsubscribeFromPush(currentTeamId);
+      setPushSubscribed(false);
+      setPushStatus(null);
+      try { window.localStorage.removeItem('hockeyschema.pushSubscribed'); } catch { /* localStorage niet beschikbaar */ }
+      return;
+    }
+    const status = await subscribeToPush(currentTeamId);
+    setPushStatus(status);
+    if (status === 'granted') {
+      setPushSubscribed(true);
+      try { window.localStorage.setItem('hockeyschema.pushSubscribed', '1'); } catch { /* localStorage niet beschikbaar */ }
+    }
+  }
   const [scorerPicker, setScorerPicker] = useState(false);
   const [scorerSelected, setScorerSelected] = useState(null);
   // Wie de assist gaf bij dit doelpunt - optioneel, en kan nooit gelijk zijn aan scorerSelected
@@ -682,53 +702,6 @@ export default function App() {
     beep(now + 0.45, 0.35);
     beep(now + 0.9, 0.6);
   }
-  // Pakt de meest natuurlijk klinkende Nederlandse stem die de browser/het besturingssysteem
-  // aanbiedt (bv. een "Online (Natural)"- of Google-stem i.p.v. de standaard robotachtige) - de
-  // lijst kan per apparaat verschillen en wordt soms pas na een tick gevuld, vandaar de losse
-  // priming-effect hieronder i.p.v. hier meteen op te rekenen.
-  function pickDutchVoice() {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return null;
-    const voices = window.speechSynthesis.getVoices() || [];
-    const nl = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('nl'));
-    if (!nl.length) return null;
-    return nl.find(v => /natural|neural|online/i.test(v.name)) || nl.find(v => /google/i.test(v.name)) || nl[0];
-  }
-  // Spreekt de feitelijke aankondiging (zie buildGoalAnnouncement) uit via de browser's
-  // ingebouwde spraaksynthese - geen stemopnames nodig. window.speechSynthesis.cancel()
-  // voorkomt dat aankondigingen zich opstapelen als er kort na elkaar wordt gescoord.
-  function announceGoal(phrase) {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    try {
-      window.speechSynthesis.cancel();
-      const line = new SpeechSynthesisUtterance(phrase || clubName + ' scoort!');
-      line.lang = 'nl-NL';
-      const voice = pickDutchVoice();
-      if (voice) line.voice = voice;
-      line.pitch = 1.05;
-      line.rate = 1.0;
-      window.speechSynthesis.speak(line);
-    } catch { /* spraaksynthese niet beschikbaar */ }
-  }
-  // Ontgrendelt spraak/audio voor deze pagina met een echte, directe gebruikerstik (zie
-  // soundUnlocked hierboven) - spreekt meteen een testzinnetje uit, zodat de kijker tegelijk
-  // hoort dát het werkt. Nodig omdat browsers (vooral mobiel/iOS) geautomatiseerde
-  // spraak/audio - zoals de doelpuntaankondiging die via Firestore binnenkomt, dus zonder eigen
-  // tik van de kijker op dát moment - alleen toestaan ná zo'n eerdere, directe interactie.
-  function unlockSound() {
-    ensureAudioCtx();
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      try {
-        window.speechSynthesis.cancel();
-        const line = new SpeechSynthesisUtterance('Geluid staat aan.');
-        line.lang = 'nl-NL';
-        const voice = pickDutchVoice();
-        if (voice) line.voice = voice;
-        window.speechSynthesis.speak(line);
-      } catch { /* spraaksynthese niet beschikbaar */ }
-    }
-    setSoundUnlocked(true);
-  }
-
   // isMyTeam: ingelogd én (coach van het bekeken team, of gebruiker is admin) - een manager
   // telt hier bewust niet mee, die krijgt geen coach-rechten, alleen via canManageOuders
   // hieronder specifiek het bewerken van Ouders. Iemand kan coach van meerdere teams zijn -
@@ -762,14 +735,6 @@ export default function App() {
       wisselSignaalAudioRef.current.muted = false;
     }
   }, [matchMode, isMyTeam]);
-
-  // Sommige browsers vullen speechSynthesis.getVoices() pas een tick na het laden van de pagina
-  // (asynchroon, via het voiceschanged-event) - deze ene aanroep triggert dat vullen zodat
-  // pickDutchVoice() bij het eerste echte doelpunt niet per ongeluk een lege lijst treft.
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    window.speechSynthesis.getVoices();
-  }, []);
 
   // selectedPouleId/programmaCompetitionFilter zijn poule_id's (LISA-standen-ids) - die zijn
   // NIET hetzelfde tussen teams, ook niet bij een gelijknamige competitie ("Meisjes O18
@@ -2591,14 +2556,12 @@ export default function App() {
     if (prevUsGoalCountRef.current != null && usCount > prevUsGoalCountRef.current) {
       const latest = usEntries[usEntries.length - 1];
       const phrase = buildGoalAnnouncement(latest.scorerName || clubName, latest.minute, latest.assistName || null, latest.atUs, latest.atThem);
-      announceGoal(phrase);
       setGoalToast({ kind: 'us', text: phrase });
       if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
       goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
     } else if (prevThemGoalCountRef.current != null && themCount > prevThemGoalCountRef.current) {
       const latest = themEntries[themEntries.length - 1];
       const phrase = buildAgainstAnnouncement(latest.minute, latest.atUs, latest.atThem);
-      announceGoal(phrase);
       setGoalToast({ kind: 'them', text: phrase });
       if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
       goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
@@ -3377,7 +3340,7 @@ export default function App() {
           aria-label="Melding sluiten"
           style={css('position:fixed;top:var(--space-4);left:50%;z-index:50;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 22px;border-radius:var(--radius-lg);border:none;cursor:pointer;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,0.28);text-align:center;background:' + (goalToast.kind === 'them' ? 'var(--color-neutral-800)' : 'var(--color-accent-700)'))}>
           <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.85')}>
-            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚽ Goal voor ${clubName}!`}
+            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚪ Goal voor ${clubName}!`}
           </span>
           <span style={css('font-family:var(--font-heading);font-size:20px;font-weight:600')}>{goalToast.text}</span>
         </button>
@@ -3410,24 +3373,16 @@ export default function App() {
                 )}
               </div>
               <div style={css('display:flex;align-items:center;gap:8px;margin-left:auto')}>
-                {/* Voor kijkers die alleen meevolgen (dus geen coach-knoppen om al op te tikken):
-                    zonder deze tik blijft speechSynthesis/audio op mobiel potdicht zodra de
-                    doelpuntaankondiging straks automatisch (via Firestore, niet via een klik van
-                    deze kijker) probeert af te spelen. Alleen tonen zolang er een live wedstrijd
-                    loopt en dit toestel 'm nog niet heeft ontgrendeld. */}
-                {m.liveOpened && !soundUnlocked && (
+                {/* Pushmelding bij een doelpunt - werkt ook met het scherm uit/in de broekzak,
+                    zie push.js voor de opzet en de iOS-beperking (alleen als "app op
+                    beginscherm" geïnstalleerd, niet in gewoon Safari). Wisselt tussen aan/uit
+                    via dezelfde togglePush, zie pushSubscribed hierboven. */}
+                {m.liveOpened && (
                   <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
-                    onClick={unlockSound}>🔊 Geluid aanzetten</button>
-                )}
-                {/* Écht een pushmelding (werkt ook met het scherm uit/in de broekzak, i.t.t. het
-                    geluid hierboven dat alleen werkt zolang de pagina open/actief is) - zie
-                    push.js voor de opzet en de iOS-beperking (alleen als "app op beginscherm"
-                    geïnstalleerd, niet in gewoon Safari). typeof-check omdat Notification in
-                    sommige (oudere) browsers niet bestaat. */}
-                {m.liveOpened && typeof Notification !== 'undefined' && Notification.permission !== 'granted' && (
-                  <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
-                    title="Werkt ook met vergrendeld scherm. Op iPhone: zet deze site eerst via het deelmenu op je beginscherm, anders staat Apple dit niet toe."
-                    onClick={async () => setPushStatus(await subscribeToPush(currentTeamId))}>🔔 Meldingen aanzetten</button>
+                    title={pushSubscribed
+                      ? 'Zet doelpunt-pushmeldingen op dit toestel weer uit'
+                      : 'Werkt ook met vergrendeld scherm. Op iPhone: zet deze site eerst via het deelmenu op je beginscherm, anders staat Apple dit niet toe.'}
+                    onClick={togglePush}>{pushSubscribed ? '🔕 Meldingen uitzetten' : '🔔 Meldingen aanzetten'}</button>
                 )}
                 {pushStatus && pushStatus !== 'granted' && (
                   <span style={css('font-size:12px;color:var(--color-neutral-700);max-width:220px')}>
@@ -4495,20 +4450,15 @@ export default function App() {
           </div>
 
           <div className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3)')}>
-            {typeof Notification !== 'undefined' && Notification.permission === 'granted' ? (
-              <span style={css('font-size:15px')}>✅ Meldingen staan aan op dit toestel/deze browser.</span>
-            ) : (
-              <>
-                <button type="button" className="btn btn-primary" style={css('align-self:flex-start')}
-                  onClick={async () => setPushStatus(await subscribeToPush(currentTeamId))}>🔔 Meldingen aanzetten</button>
-                {pushStatus && pushStatus !== 'granted' && (
-                  <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
-                    {pushStatus === 'denied'
-                      ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
-                      : 'Wordt op dit toestel/deze browser niet ondersteund - zie de iPhone-stappen hieronder als je op een iPhone/iPad zit.'}
-                  </span>
-                )}
-              </>
+            {pushSubscribed && <span style={css('font-size:15px')}>✅ Meldingen staan aan op dit toestel/deze browser.</span>}
+            <button type="button" className={pushSubscribed ? 'btn btn-secondary' : 'btn btn-primary'} style={css('align-self:flex-start')}
+              onClick={togglePush}>{pushSubscribed ? '🔕 Meldingen uitzetten' : '🔔 Meldingen aanzetten'}</button>
+            {pushStatus && pushStatus !== 'granted' && (
+              <span style={css('font-size:13px;color:var(--color-neutral-700)')}>
+                {pushStatus === 'denied'
+                  ? 'Meldingen geweigerd - zet ze aan bij de site-instellingen van je browser.'
+                  : 'Wordt op dit toestel/deze browser niet ondersteund - zie de iPhone-stappen hieronder als je op een iPhone/iPad zit.'}
+              </span>
             )}
           </div>
 

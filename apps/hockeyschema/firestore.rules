@@ -29,15 +29,17 @@ service cloud.firestore {
     }
     // Pushmeldingstokens (FCM) voor de doelpuntmelding - net als het live meekijken zelf
     // (state/public) bewust open voor iedereen, ook uitgelogd: een ouder die niet is ingelogd
-    // moet zich ook kunnen aanmelden voor meldingen. Geen client leest deze lijst ooit terug
-    // (alleen de onGoalScored Cloud Function, via de Admin SDK die deze rules niet raakt), dus
-    // read blijft dicht. Alleen de Cloud Function ruimt een verlopen/ingetrokken token op
-    // (delete blijft daarom ook dicht voor clients).
+    // moet zich ook kunnen aan- én afmelden voor meldingen (zie unsubscribeFromPush in push.js).
+    // Geen client leest deze lijst ooit terug (alleen de onGoalScored Cloud Function, via de
+    // Admin SDK die deze rules niet raakt), dus read blijft dicht. delete staat open op
+    // hetzelfde vertrouwensniveau als create - een FCM-token is een lang, ondoorzichtig ID; wie
+    // het al kent kan er sowieso al eentje voor terugschrijven, dus verwijderen toestaan voegt
+    // geen nieuw risico toe.
     match /teams/{teamId}/pushTokens/{tokenId} {
       allow read: if false;
       allow create, update: if request.resource.data.token == tokenId
         && request.resource.data.keys().hasOnly(['token', 'createdAt']);
-      allow delete: if false;
+      allow delete: if true;
     }
     match /teams/{teamId}/state/history {
       allow read: if isTeamMember(teamId);

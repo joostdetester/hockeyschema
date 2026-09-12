@@ -511,7 +511,7 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
 
   const res = await admin.messaging().sendEachForMulticast({
     tokens,
-    notification: { title: '⚽ Doelpunt!', body },
+    notification: { title: '⚪ Doelpunt!', body },
   });
 
   // Ruimt tokens op die niet meer bestaan (uitgeschreven browser, verlopen registratie e.d.) -

@@ -1,5 +1,5 @@
-import { getMessaging, getToken, isSupported } from 'firebase/messaging';
-import { doc, setDoc } from 'firebase/firestore';
+import { getMessaging, getToken, deleteToken, isSupported } from 'firebase/messaging';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase.js';
 
 // Belangrijke beperking: op iPhone/iPad staat Apple Web Push alleen toe vanuit een site die via
@@ -42,4 +42,24 @@ export async function subscribeToPush(teamId) {
   } catch {
     return 'unsupported';
   }
+}
+
+// Zet meldingen weer uit: verwijdert het apparaat-token bij deze wedstrijd/team, zodat
+// onGoalScored er niet langer naartoe stuurt, en trekt het FCM-token zelf in. Kan de
+// browser-meldingstoestemming zelf niet intrekken (geen enkele website kan dat - alleen de
+// gebruiker zelf, via de site-instellingen van de browser), maar dat maakt voor de praktijk
+// niets uit: zonder geldig token komt er domweg niets meer binnen.
+export async function unsubscribeFromPush(teamId) {
+  const messaging = await getMessagingInstance();
+  if (!messaging) return;
+  try {
+    const qs = new URLSearchParams(firebaseConfig).toString();
+    const registration = await navigator.serviceWorker.register(`/firebase-messaging-sw.js?${qs}`);
+    const token = await getToken(messaging, {
+      vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+      serviceWorkerRegistration: registration,
+    });
+    if (token) await deleteDoc(doc(db, 'teams', teamId, 'pushTokens', token));
+    await deleteToken(messaging);
+  } catch { /* was al uit, of niet ondersteund - geen probleem */ }
 }
