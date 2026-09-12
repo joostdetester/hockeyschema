@@ -63,31 +63,6 @@ const TIMER_ALERT_REMAINING_MS = TIMER_TOTAL_MS - Math.round((QUARTER_MIN / 2 - 
 // plafond uit. Bewust flink boven 1 - het mag best wat overstuurd/schel klinken, dat maakt 'm
 // juist beter hoorbaar langs de lijn.
 const WISSEL_SIGNAL_GAIN = 4;
-// Pool met leuke doelpuntzinnen (zie pickGoalPhrase) - elke keer een andere, nooit twee keer
-// dezelfde achter elkaar. Zinnen met {assist} worden alleen gekozen als er een assist is
-// ingevoerd bij dit doelpunt; de rest gaat puur over de scorer. {name} is verplicht in allebei.
-const GOAL_PHRASES = [
-  { t: 'Wat een knal van {name}!' },
-  { t: '{name} maakt \'m feilloos af!' },
-  { t: 'Raak! {name} vindt het doel!' },
-  { t: '{name} schrijft geschiedenis met deze goal!' },
-  { t: 'Onhoudbaar, die van {name}!' },
-  { t: '{name} laat de keeper kansloos!' },
-  { t: 'Wat een killersinstinct van {name}!' },
-  { t: 'Boem! Daar gaat \'ie, dankzij {name}!' },
-  { t: '{name} zet \'m feilloos binnen!' },
-  { t: 'Prachtig afgerond door {name}!' },
-  { t: '{name} is niet te stoppen vandaag!' },
-  { t: 'Recht in de kruising, gefeliciteerd {name}!' },
-  { t: '{name} scoort en het publiek gaat uit hun dak!' },
-  { t: 'Wat een moment voor {name}!' },
-  { t: 'Simpel maar doeltreffend, chapeau {name}!' },
-  { t: 'Prachtige assist van {assist}, en {name} maakt \'m af!', assist: true },
-  { t: '{assist} legt \'m klaar, {name} schiet raak!', assist: true },
-  { t: 'Wat een samenspel: {assist} geeft, {name} scoort!', assist: true },
-  { t: '{assist} serveert \'m op een presenteerblaadje voor {name}!', assist: true },
-  { t: 'Teamwork pur sang - {assist} naar {name}, en raak!', assist: true },
-];
 // Live wedstrijdvolgen: de klok per kwart leeft in m.clocks (Firestore-gesynchroniseerd, dus
 // voor iedereen live zichtbaar) i.p.v. lokale state - dit is de standaardwaarde voor een kwart
 // dat nog niet is aangeraakt.
@@ -558,6 +533,11 @@ export default function App() {
   // op elk tabblad, zodra de nieuwe stand binnenkomt.
   const [goalToast, setGoalToast] = useState(null);
   const goalToastTimeoutRef = useRef(null);
+  // Mobiele browsers (vooral iOS Safari) staan speechSynthesis/audio pas toe ná een directe tik
+  // van de kijker op DIE pagina - een doelpunt dat via Firestore binnenkomt terwijl iemand alleen
+  // passief meekijkt telt daar niet voor. soundUnlocked (per paginabezoek, niet onthouden) volgt
+  // of die tik al is gegeven; zie unlockSound en de knop ernaast in de header.
+  const [soundUnlocked, setSoundUnlocked] = useState(false);
   const [scorerPicker, setScorerPicker] = useState(false);
   const [scorerSelected, setScorerSelected] = useState(null);
   // Wie de assist gaf bij dit doelpunt - optioneel, en kan nooit gelijk zijn aan scorerSelected
@@ -610,16 +590,11 @@ export default function App() {
   // nog niet geïnitialiseerd voor de huidige wedstrijd.
   const prevUsGoalCountRef = useRef(null);
   const goalToastFixtureKeyRef = useRef(undefined);
-  // Onthoudt de laatst gekozen zin uit GOAL_PHRASES, puur om te voorkomen dat dezelfde zin twee
-  // keer achter elkaar valt - zie pickGoalPhrase.
-  const lastGoalPhraseRef = useRef(null);
-  function pickGoalPhrase(name, assistName) {
-    const eligible = GOAL_PHRASES.filter(p => !p.assist || assistName);
-    let idx = Math.floor(Math.random() * eligible.length);
-    if (eligible.length > 1 && eligible[idx] === lastGoalPhraseRef.current) idx = (idx + 1) % eligible.length;
-    const chosen = eligible[idx];
-    lastGoalPhraseRef.current = chosen;
-    return chosen.t.replace('{name}', name).replace('{assist}', assistName || '');
+  // Feitelijke aankondiging: wie scoorde, in welke minuut, en (indien ingevuld) wie de assist
+  // gaf - geen verzonnen tekst meer, puur de kale feiten.
+  function buildGoalAnnouncement(name, minute, assistName) {
+    const base = `${name} scoort in de ${minute}e minuut!`;
+    return assistName ? `${base} Assist van ${assistName}.` : base;
   }
   function ensureAudioCtx() {
     if (!audioCtxRef.current) {
@@ -665,10 +640,9 @@ export default function App() {
     if (!nl.length) return null;
     return nl.find(v => /natural|neural|online/i.test(v.name)) || nl.find(v => /google/i.test(v.name)) || nl[0];
   }
-  // Spreekt de gekozen leuke zin (zie pickGoalPhrase) uit via de browser's ingebouwde
-  // spraaksynthese - geen stemopnames nodig. Start iets na het scoor-geluid hierboven, zodat ze
-  // niet door elkaar heen klinken. window.speechSynthesis.cancel() voorkomt dat aankondigingen
-  // zich opstapelen als er kort na elkaar wordt gescoord.
+  // Spreekt de feitelijke aankondiging (zie buildGoalAnnouncement) uit via de browser's
+  // ingebouwde spraaksynthese - geen stemopnames nodig. window.speechSynthesis.cancel()
+  // voorkomt dat aankondigingen zich opstapelen als er kort na elkaar wordt gescoord.
   function announceGoal(phrase) {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
     try {
@@ -679,8 +653,27 @@ export default function App() {
       if (voice) line.voice = voice;
       line.pitch = 1.05;
       line.rate = 1.0;
-      setTimeout(() => { try { window.speechSynthesis.speak(line); } catch { /* spraaksynthese niet beschikbaar */ } }, 450);
+      window.speechSynthesis.speak(line);
     } catch { /* spraaksynthese niet beschikbaar */ }
+  }
+  // Ontgrendelt spraak/audio voor deze pagina met een echte, directe gebruikerstik (zie
+  // soundUnlocked hierboven) - spreekt meteen een testzinnetje uit, zodat de kijker tegelijk
+  // hoort dát het werkt. Nodig omdat browsers (vooral mobiel/iOS) geautomatiseerde
+  // spraak/audio - zoals de doelpuntaankondiging die via Firestore binnenkomt, dus zonder eigen
+  // tik van de kijker op dát moment - alleen toestaan ná zo'n eerdere, directe interactie.
+  function unlockSound() {
+    ensureAudioCtx();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+        const line = new SpeechSynthesisUtterance('Geluid staat aan.');
+        line.lang = 'nl-NL';
+        const voice = pickDutchVoice();
+        if (voice) line.voice = voice;
+        window.speechSynthesis.speak(line);
+      } catch { /* spraaksynthese niet beschikbaar */ }
+    }
+    setSoundUnlocked(true);
   }
 
   // isMyTeam: ingelogd én (coach van het bekeken team, of gebruiker is admin) - een manager
@@ -2538,11 +2531,11 @@ export default function App() {
     }
     if (prevUsGoalCountRef.current != null && count > prevUsGoalCountRef.current) {
       const latest = usEntries[usEntries.length - 1];
-      const phrase = pickGoalPhrase(latest.scorerName || ownTeamName, latest.assistName || null);
+      const phrase = buildGoalAnnouncement(latest.scorerName || ownTeamName, latest.minute, latest.assistName || null);
       announceGoal(phrase);
       setGoalToast({ text: phrase, atUs: latest.atUs, atThem: latest.atThem });
       if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
-      goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 5000);
+      goalToastTimeoutRef.current = setTimeout(() => setGoalToast(null), 15000);
     }
     prevUsGoalCountRef.current = count;
   }, [m.goalLog, m.fixtureId]);
@@ -3349,6 +3342,15 @@ export default function App() {
                 )}
               </div>
               <div style={css('display:flex;align-items:center;gap:8px;margin-left:auto')}>
+                {/* Voor kijkers die alleen meevolgen (dus geen coach-knoppen om al op te tikken):
+                    zonder deze tik blijft speechSynthesis/audio op mobiel potdicht zodra de
+                    doelpuntaankondiging straks automatisch (via Firestore, niet via een klik van
+                    deze kijker) probeert af te spelen. Alleen tonen zolang er een live wedstrijd
+                    loopt en dit toestel 'm nog niet heeft ontgrendeld. */}
+                {m.liveOpened && !soundUnlocked && (
+                  <button type="button" className="btn btn-secondary" style={css('font-size:13px;padding:5px 10px')}
+                    onClick={unlockSound}>🔊 Geluid aanzetten</button>
+                )}
                 {isMyTeam && (
                   <button type="button" className={matchMode ? 'btn btn-secondary' : 'btn btn-primary'} style={css('font-size:13px;padding:5px 10px')}
                     onClick={() => setMatchMode(v => !v)}>{matchMode ? 'Wedstrijdmodus uit' : 'Wedstrijdmodus'}</button>
