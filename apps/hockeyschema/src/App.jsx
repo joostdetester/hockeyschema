@@ -163,20 +163,37 @@ const ICON_SWAP_VERT = 'M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 
 // voornaam wordt getoond (dus niet waar ook de achternaam erbij staat) moet dat onderscheidbaar
 // blijven.
 function displayFirst(p) { return p && p.sub ? p.first + ' (I)' : (p ? p.first : '?'); }
-// Verboden of voorkeurscijfer voor een speler op een positie - gedeeld door het wedstrijdschema
-// (naast een naam) én de wissel-/verplaatsdialogen (in de "fit"-tekst), zodat beide exact
-// dezelfde badge tonen.
+// Verboden, voorkeurscijfer, of "geen voorkeur ingevuld" voor een speler op een positie -
+// gedeeld door het wedstrijdschema (naast een naam) én de wissel-/verplaatsdialogen (in de
+// "fit"-tekst), zodat beide exact dezelfde badge tonen. maxN is de hóógste voorkeurswaarde die
+// déze speler zelf ooit heeft ingevuld (bv. 5 als ze posities 1 t/m 5 heeft gerangschikt) - de
+// kleurschaal in prefColor loopt per speler van groen (1, haar beste positie) naar oranje (maxN,
+// haar minst geprefereerde ingevulde positie), niet op een vast bereik.
 function prefMark(p, pos) {
   if (!p) return null;
   if (p.avoid && p.avoid[pos]) return { kind: 'forbidden' };
-  return p.prefs[pos] ? { kind: 'pref', n: p.prefs[pos] } : null;
+  const n = p.prefs[pos];
+  if (!n) return { kind: 'none' };
+  const filled = Object.values(p.prefs).filter(Boolean);
+  return { kind: 'pref', n, maxN: filled.length ? Math.max(...filled) : n };
+}
+// Lineaire interpolatie tussen groen (rang 1) en oranje (rang maxN) - bewust hardcoded (net als
+// ATTENDANCE_COLOR verderop) i.p.v. een design-token, want dit is een driekleurenschaal
+// (groen/oranje/rood) die verder los staat van het huisstijlpalet.
+function prefColor(n, maxN) {
+  const t = maxN > 1 ? (n - 1) / (maxN - 1) : 0;
+  const from = [47, 158, 79], to = [217, 130, 43];
+  return `rgb(${from.map((c, i) => Math.round(c + (to[i] - c) * t)).join(',')})`;
 }
 function markBadge(mark) {
   if (!mark) return null;
+  const badgeStyle = 'display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 auto;border-radius:50%;color:#fff;font-size:10px;font-weight:700;line-height:1;margin-left:4px;vertical-align:middle;';
   if (mark.kind === 'forbidden') return <span aria-label="verboden op deze positie" style={css('margin-left:4px')}>🚫</span>;
+  if (mark.kind === 'none') {
+    return <span aria-label="geen voorkeur ingevuld" style={css(badgeStyle + 'background:#d9363e')}>?</span>;
+  }
   return (
-    <span aria-label={`voorkeur ${mark.n} op deze plek`}
-      style={css('display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 auto;border-radius:50%;background:var(--color-accent-700);color:#fff;font-size:10px;font-weight:700;line-height:1;margin-left:4px;vertical-align:middle')}>
+    <span aria-label={`voorkeur ${mark.n} op deze plek`} style={css(badgeStyle + 'background:' + prefColor(mark.n, mark.maxN))}>
       {mark.n}
     </span>
   );
@@ -1943,7 +1960,10 @@ export default function App() {
 
   const fitOf = (p, pos) => {
     const mark = prefMark(p, pos);
-    const label = mark ? (mark.kind === 'forbidden' ? 'verboden op deze positie' : 'voorkeur ' + mark.n + ' op deze plek') : 'speelt hier normaal niet';
+    const label = !mark ? 'speelt hier normaal niet'
+      : mark.kind === 'forbidden' ? 'verboden op deze positie'
+      : mark.kind === 'none' ? 'geen voorkeur ingevuld'
+      : 'voorkeur ' + mark.n + ' op deze plek';
     return <>{label}{markBadge(mark)}</>;
   };
   let editor = null;
