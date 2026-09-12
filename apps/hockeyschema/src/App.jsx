@@ -9,6 +9,7 @@ import Login from './Login.jsx';
 import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 import { subscribeToPush, unsubscribeFromPush } from './push.js';
+import { CHANGELOG } from './changelog.js';
 
 function css(str) {
   const obj = {};
@@ -1596,7 +1597,7 @@ export default function App() {
     // coach "Start wedstrijd" heeft aangevinkt - staat daarom niet in LOGGED_IN_ONLY_TABS en komt
     // hier al kant-en-klaar door de filter hieronder.
     ...(m.liveOpened ? [['live', 'Live']] : []),
-    ...(isAdmin ? [['inlog', 'Inlogpogingen']] : []),
+    ...(isAdmin ? [['inlog', 'Inlogpogingen'], ['wijzigingen', 'Wijzigingen']] : []),
   ].filter(t => t[0] === 'teams' ? !!user : ((user && !limitedNav) || !LOGGED_IN_ONLY_TABS.includes(t[0]))).map(t => ({
     key: t[0], label: t[1], go: () => setTab(t[0]),
     style: 'background:none;border:none;padding:4px 0 6px;cursor:pointer;font-family:var(--font-heading);font-size:18px;letter-spacing:0.01em;'
@@ -4899,6 +4900,23 @@ export default function App() {
             })}
             {!allUsers.length && <p style={css('margin:0;font-size:14px;color:var(--color-neutral-700)')}>Nog geen gebruikers.</p>}
           </div>
+        </main>
+      )}
+
+      {tab === 'wijzigingen' && isAdmin && (
+        <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6);max-width:640px')}>
+          <div>
+            <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Wijzigingen</h2>
+            <p style={css('margin:4px 0 0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Per versie wat er is toegevoegd of veranderd aan de app. Huidige versie: v{__APP_VERSION__}.</p>
+          </div>
+          {CHANGELOG.map(entry => (
+            <div key={entry.version} className="card elev-sm" style={css('padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)')}>
+              <div className="card-title">v{entry.version} · {entry.date}</div>
+              <ul style={css('margin:0;padding-left:1.2em;font-size:15px;line-height:1.6')}>
+                {entry.changes.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          ))}
         </main>
       )}
 
