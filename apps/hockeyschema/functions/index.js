@@ -455,22 +455,34 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   const afterUs = afterLog.filter(e => e.team === 'us');
   const afterThem = afterLog.filter(e => e.team === 'them');
 
-  // Zelfde feitelijke aankondiging (inclusief stand) als buildGoalAnnouncement/
-  // buildAgainstAnnouncement in App.jsx (client) - hier gedupliceerd omdat deze Cloud Function
-  // de clientbundel niet importeert.
-  let body = null;
-  if (afterUs.length > beforeUsCount) {
-    const latest = afterUs[afterUs.length - 1];
-    body = `${latest.scorerName || 'HCRB'} scoort in de ${latest.minute}e minuut!`;
-    if (latest.assistName) body += ` Assist van ${latest.assistName}.`;
-    body += ` Stand ${latest.atUs}-${latest.atThem}.`;
-  } else if (afterThem.length > beforeThemCount) {
-    const latest = afterThem[afterThem.length - 1];
-    body = `Tegendoelpunt in de ${latest.minute}e minuut. Stand ${latest.atUs}-${latest.atThem}.`;
-  }
-  if (!body) return;
+  if (afterUs.length <= beforeUsCount && afterThem.length <= beforeThemCount) return;
 
   const teamId = event.params.teamId;
+  // Zelfde thuis/uit-volgorde als scoreLine in App.jsx (client) - bv. "Ring Pass 3 HCRB 29"
+  // i.p.v. kale cijfers. Vereist de eigen teamnaam, die niet in state/public zelf staat (dat
+  // heeft alleen match.opponent), vandaar deze extra losse read.
+  const teamSnap = await admin.firestore().doc(`teams/${teamId}`).get();
+  const ownTeamName = (teamSnap.exists && teamSnap.data().name) || 'HCRB';
+  // Alleen de clubnaam ("HCRB"), niet de volledige teamnaam ("HCRB MO18-2") - zelfde regel als
+  // clubName in App.jsx (client).
+  const clubName = ownTeamName.split(' ')[0] || ownTeamName;
+  const fx = (after.fixtures || []).find(f => f.id === (after.match || {}).fixtureId);
+  const opp = (after.match || {}).opponent || (fx ? fx.opponent : 'onbekend');
+  const scoreLine = (us, them) => (fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`);
+
+  // Zelfde feitelijke aankondiging als buildGoalAnnouncement/buildAgainstAnnouncement in App.jsx
+  // (client) - hier gedupliceerd omdat deze Cloud Function de clientbundel niet importeert.
+  let body;
+  if (afterUs.length > beforeUsCount) {
+    const latest = afterUs[afterUs.length - 1];
+    body = `${latest.scorerName || clubName} scoort in de ${latest.minute}e minuut!`;
+    if (latest.assistName) body += ` Assist van ${latest.assistName}.`;
+    body += ` Stand: ${scoreLine(latest.atUs, latest.atThem)}.`;
+  } else {
+    const latest = afterThem[afterThem.length - 1];
+    body = `Tegendoelpunt in de ${latest.minute}e minuut. Stand: ${scoreLine(latest.atUs, latest.atThem)}.`;
+  }
+
   const tokensSnap = await admin.firestore().collection(`teams/${teamId}/pushTokens`).get();
   if (tokensSnap.empty) return;
   const tokens = tokensSnap.docs.map(d => d.id);

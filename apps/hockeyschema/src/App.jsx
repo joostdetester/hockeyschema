@@ -601,15 +601,23 @@ export default function App() {
   const goalToastFixtureKeyRef = useRef(undefined);
   // Feitelijke aankondiging: wie scoorde, in welke minuut, en (indien ingevuld) wie de assist
   // gaf - geen verzonnen tekst meer, puur de kale feiten.
+  // Noemt de stand met teamnamen erbij, in dezelfde thuis/uit-volgorde als scheduleTitle
+  // hieronder (bv. "Ring Pass 3 HCRB 29") i.p.v. kale cijfers - "us"/"them" zijn altijd eigen/
+  // tegenstander, dus die moeten hier nog naar thuis/uit omgezet worden.
+  function scoreLine(us, them) {
+    const fx = fixtures.find(f => f.id === m.fixtureId);
+    const opp = m.opponent || (fx ? fx.opponent : 'onbekend');
+    return fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`;
+  }
   function buildGoalAnnouncement(name, minute, assistName, us, them) {
     const base = `${name} scoort in de ${minute}e minuut!`;
     const withAssist = assistName ? `${base} Assist van ${assistName}.` : base;
-    return `${withAssist} Stand ${us}-${them}.`;
+    return `${withAssist} Stand: ${scoreLine(us, them)}.`;
   }
   // Zelfde soort feitelijke aankondiging als hierboven, maar dan voor een tegendoelpunt - geen
   // scorer/assist bekend (die worden niet ingevoerd voor de tegenstander), dus puur minuut + stand.
   function buildAgainstAnnouncement(minute, us, them) {
-    return `Tegendoelpunt in de ${minute}e minuut. Stand ${us}-${them}.`;
+    return `Tegendoelpunt in de ${minute}e minuut. Stand: ${scoreLine(us, them)}.`;
   }
   function ensureAudioCtx() {
     if (!audioCtxRef.current) {
@@ -662,7 +670,7 @@ export default function App() {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
     try {
       window.speechSynthesis.cancel();
-      const line = new SpeechSynthesisUtterance(phrase || ownTeamName + ' scoort!');
+      const line = new SpeechSynthesisUtterance(phrase || clubName + ' scoort!');
       line.lang = 'nl-NL';
       const voice = pickDutchVoice();
       if (voice) line.voice = voice;
@@ -1566,6 +1574,10 @@ export default function App() {
   // ---- derived values (mirrors the original renderVals) ----
   const m = match;
   const ownTeamName = (teams.find(t => t.id === currentTeamId) || {}).name || OWN_TEAM;
+  // Voor de doelpuntmelding (banner/spraak/pushmelding) willen we alleen de clubnaam ("HCRB"),
+  // niet de volledige teamnaam ("HCRB MO18-2") - teamnamen zijn altijd "<club> <teamcode>", dus
+  // het eerste woord volstaat.
+  const clubName = ownTeamName.split(' ')[0] || ownTeamName;
   // Teams-tab directory: admin ziet alles, een coach alleen zijn eigen team(s), een niet-
   // ingelogde bezoeker geen enkel team - "je ziet alleen teams waar je bij hoort".
   const visibleTeams = isAdmin ? teams : teams.filter(t => myTeams && myTeams[t.id]);
@@ -2549,7 +2561,7 @@ export default function App() {
     }
     if (prevUsGoalCountRef.current != null && usCount > prevUsGoalCountRef.current) {
       const latest = usEntries[usEntries.length - 1];
-      const phrase = buildGoalAnnouncement(latest.scorerName || ownTeamName, latest.minute, latest.assistName || null, latest.atUs, latest.atThem);
+      const phrase = buildGoalAnnouncement(latest.scorerName || clubName, latest.minute, latest.assistName || null, latest.atUs, latest.atThem);
       announceGoal(phrase);
       setGoalToast({ kind: 'us', text: phrase });
       if (goalToastTimeoutRef.current) clearTimeout(goalToastTimeoutRef.current);
@@ -3336,7 +3348,7 @@ export default function App() {
           aria-label="Melding sluiten"
           style={css('position:fixed;top:var(--space-4);left:50%;z-index:50;display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 22px;border-radius:var(--radius-lg);border:none;cursor:pointer;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,0.28);text-align:center;background:' + (goalToast.kind === 'them' ? 'var(--color-neutral-800)' : 'var(--color-accent-700)'))}>
           <span style={css('font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.85')}>
-            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚽ Goal voor ${ownTeamName}!`}
+            {goalToast.kind === 'them' ? 'Tegendoelpunt' : `⚽ Goal voor ${clubName}!`}
           </span>
           <span style={css('font-family:var(--font-heading);font-size:20px;font-weight:600')}>{goalToast.text}</span>
         </button>
