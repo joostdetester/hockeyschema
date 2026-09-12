@@ -1,0 +1,16 @@
+{
+  "cucumber.features": ["features/**/*.feature"],
+  "cucumber.glue": ["steps/**/*.ts", ".vscode/cucumber-glue/**/*.js"],
+  "cucumberautocomplete.steps": ["steps/*.ts", ".vscode/cucumber-glue/**/*.js"],
+  "cucumberautocomplete.pureTextSteps": true,
+  "cucumberautocomplete.syncfeatures": "features/*.feature",
+  "cucumberautocomplete.strictGherkinCompletion": true,
+  "cucumberautocomplete.strictGherkinValidation": false,
+  "cucumberautocomplete.smartSnippets": true,
+  "cucumberautocomplete.stepsInvariants": true,
+  "cucumberautocomplete.stepRegExSymbol": "'",
+  "cucumberautocomplete.customParameters": [
+    { "parameter": "{string}", "value": "\"[^\"]*\"" },
+    { "parameter": "{int}", "value": "-?\\d+" }
+  ]
+}

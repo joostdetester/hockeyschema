@@ -1,4 +1,4 @@
-@ui @wedstrijdschema
+@ui @wedstrijdschema @critical
 Feature: Wedstrijdschema
 
   # Same "logged in as a team member" dependency as team.feature - most of these also

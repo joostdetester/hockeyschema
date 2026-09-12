@@ -27,6 +27,20 @@ service cloud.firestore {
       allow write: if isTeamMember(teamId)
         || (isManager(teamId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fixtures']));
     }
+    // Pushmeldingstokens (FCM) voor de doelpuntmelding - net als het live meekijken zelf
+    // (state/public) bewust open voor iedereen, ook uitgelogd: een ouder die niet is ingelogd
+    // moet zich ook kunnen aan- én afmelden voor meldingen (zie unsubscribeFromPush in push.js).
+    // Geen client leest deze lijst ooit terug (alleen de onGoalScored Cloud Function, via de
+    // Admin SDK die deze rules niet raakt), dus read blijft dicht. delete staat open op
+    // hetzelfde vertrouwensniveau als create - een FCM-token is een lang, ondoorzichtig ID; wie
+    // het al kent kan er sowieso al eentje voor terugschrijven, dus verwijderen toestaan voegt
+    // geen nieuw risico toe.
+    match /teams/{teamId}/pushTokens/{tokenId} {
+      allow read: if false;
+      allow create, update: if request.resource.data.token == tokenId
+        && request.resource.data.keys().hasOnly(['token', 'createdAt']);
+      allow delete: if true;
+    }
     match /teams/{teamId}/state/history {
       allow read: if isTeamMember(teamId);
       allow write: if isTeamMember(teamId);
@@ -34,6 +48,27 @@ service cloud.firestore {
     match /teams/{teamId}/config/lisa {
       allow read: if isTeamMember(teamId);
       allow write: if isTeamMember(teamId);
+    }
+    // mijn.lisahockey.nl (personal login) credentials - deliberately admin-only, unlike
+    // config/lisa above. This token isn't scoped to one team: it's tied to whichever coach's
+    // personal LISA account captured it, and that account can see every team in the club (and
+    // list every club in the federation) via mijn.lisahockey.nl's "Alle teams" feature -
+    // confirmed 2026-09-05. A coach of this team must not be able to read or exfiltrate it.
+    // Lives once per club (keyed by the same LISA club-guid as teams/{teamId}/config/lisa.
+    // clubDudaId, confirmed identical 2026-09-04) rather than duplicated per team, since the
+    // token itself is already club-wide.
+    match /lisaClubs/{clubId}/config/lisaMy {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+    // Cached LISA attendance (mijn.lisahockey.nl) - unlike state/public, deliberately NOT
+    // publicly readable: this is per-player presence data about minors, only written by the
+    // refreshTeamAttendance Cloud Function (Admin SDK bypasses these rules for that write).
+    // Safe to leave team-member readable even though the token above isn't: the Cloud Function
+    // only ever fetches and caches *this* team's own matches (filtered by team_id).
+    match /teams/{teamId}/state/attendance {
+      allow read: if isTeamMember(teamId);
+      allow write: if false;
     }
     match /users/{uid} {
       allow read: if request.auth != null && (request.auth.uid == uid || isAdmin());
