@@ -467,7 +467,8 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   // clubName in App.jsx (client).
   const clubName = ownTeamName.split(' ')[0] || ownTeamName;
   const fx = (after.fixtures || []).find(f => f.id === (after.match || {}).fixtureId);
-  const opp = (after.match || {}).opponent || (fx ? fx.opponent : 'onbekend');
+  const oppFull = (after.match || {}).opponent || (fx ? fx.opponent : 'onbekend');
+  const opp = oppFull.split(' ')[0] || oppFull;
   const scoreLine = (us, them) => (fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`);
 
   // Zelfde feitelijke aankondiging als buildGoalAnnouncement/buildAgainstAnnouncement in App.jsx

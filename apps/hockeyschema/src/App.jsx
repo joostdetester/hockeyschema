@@ -606,7 +606,8 @@ export default function App() {
   // tegenstander, dus die moeten hier nog naar thuis/uit omgezet worden.
   function scoreLine(us, them) {
     const fx = fixtures.find(f => f.id === m.fixtureId);
-    const opp = m.opponent || (fx ? fx.opponent : 'onbekend');
+    const oppFull = m.opponent || (fx ? fx.opponent : 'onbekend');
+    const opp = oppFull.split(' ')[0] || oppFull;
     return fx && fx.home === false ? `${opp} ${them} ${clubName} ${us}` : `${clubName} ${us} ${opp} ${them}`;
   }
   function buildGoalAnnouncement(name, minute, assistName, us, them) {
