@@ -30,5 +30,34 @@ messaging.onBackgroundMessage(payload => {
     icon: '/hcrb.png',
     badge: '/hcrb.png',
     tag: 'hcrb-goal',
+    data: payload.data || {},
   });
+});
+
+// Bij een klik op de melding: naar Live als de wedstrijd nog bezig was, anders naar het
+// bijbehorende wedstrijdverslag (indien al opgeslagen), anders naar de algemene
+// Wedstrijdverslagen-pagina - zie de data die onGoalScored (functions/index.js) meestuurt, en de
+// diep-link-afhandeling (?team=&tab=&report=) in App.jsx. Navigeert een al open tab i.p.v. steeds
+// een nieuwe te openen, zodat iemand die de site al open heeft staan niet met twee tabbladen
+// eindigt.
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  const params = new URLSearchParams();
+  if (data.teamId) params.set('team', data.teamId);
+  if (data.tab) params.set('tab', data.tab);
+  if (data.report) params.set('report', data.report);
+  const qs = params.toString();
+  const url = self.registration.scope + (qs ? '?' + qs : '');
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        if ('focus' in client) {
+          if ('navigate' in client) client.navigate(url).catch(() => {});
+          return client.focus();
+        }
+      }
+      return clients.openWindow(url);
+    })
+  );
 });

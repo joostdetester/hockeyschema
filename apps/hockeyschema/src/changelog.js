@@ -4,6 +4,43 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.9.0',
+    date: '2026-09-12',
+    changes: [
+      'Doelpunt-pushmelding: klikken erop opent nu direct de juiste pagina - Live als de wedstrijd op dat moment nog bezig was, anders het bijbehorende wedstrijdverslag (indien al opgeslagen), anders de algemene Wedstrijdverslagen-pagina.',
+      'Scoreverloop en wedstrijdverslagen: klikken op een spelerskaartje toont het groot, net als bij Team.',
+    ],
+  },
+  {
+    version: '1.8.0',
+    date: '2026-09-12',
+    changes: [
+      'Scoreverloop en wedstrijdverslagen: spelerskaartje(s) worden er nu automatisch bij getoond - bij een doelpunt van de schutter (en assist als die er is), en bij Extra live commentaar van elke speelster wiens naam in de tekst wordt herkend (bv. "Mirre is lekker aan het verdedigen"). Alleen spelers mét een kaartje leveren een plaatje op.',
+    ],
+  },
+  {
+    version: '1.7.0',
+    date: '2026-09-12',
+    changes: [
+      'Bugfix: de vorige cache-fix (index.html niet meer cachen) zette per ongeluk óók de langdurige caching van de gebouwde bestanden (assets) uit, doordat de brede regel na de specifieke regels stond - Firebase Hosting past bij een botsing de láátste regel toe. Volgorde omgedraaid: de gebouwde bestanden en spelerskaartjes worden weer lang gecachet, alleen de hoofdpagina zelf niet.',
+    ],
+  },
+  {
+    version: '1.6.0',
+    date: '2026-09-12',
+    changes: [
+      'Team: het spelerskaartje naast de naam is nu een rechthoekige foto op volledige rijhoogte i.p.v. een rond icoontje.',
+      'Bugfix: bij Team bleef de kolomkop bij het naar beneden scrollen tot nu toe niet altijd goed vastgeplakt (verdween soms helemaal) - de tabel scrollt nu in zijn eigen vak met een kop die daadwerkelijk blijft plakken.',
+    ],
+  },
+  {
+    version: '1.5.0',
+    date: '2026-09-12',
+    changes: [
+      'Team: eerste leuke "spelerskaartjes" toegevoegd - een rond fotootje naast de naam (waar aanwezig) waar je op kan klikken voor de volledige kaart. Puur voor de lol, geen echte spelerdata.',
+    ],
+  },
+  {
     version: '1.4.0',
     date: '2026-09-12',
     changes: [

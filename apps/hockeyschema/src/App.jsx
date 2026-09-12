@@ -10,6 +10,7 @@ import { DEFAULT_SC } from './scDefaults.js';
 import { NOTE_GROUPS, DEFAULT_NOTE_CATEGORIES } from './noteDefaults.js';
 import { subscribeToPush, unsubscribeFromPush } from './push.js';
 import { CHANGELOG } from './changelog.js';
+import { cardFor } from './playerCards.js';
 
 function css(str) {
   const obj = {};
@@ -522,6 +523,7 @@ export default function App() {
   const [addFixtureForm, setAddFixtureForm] = useState({ date: '', time: '', opponent: '', home: true, veld: '' });
   const [addFixtureError, setAddFixtureError] = useState('');
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [cardModal, setCardModal] = useState(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const desktopMoreMenuRef = useRef(null);
   const mobileMoreMenuRef = useRef(null);
@@ -693,6 +695,32 @@ export default function App() {
   const [endMatchConfirm, setEndMatchConfirm] = useState(false);
   const [manualClockInput, setManualClockInput] = useState('');
   const [expandedReportId, setExpandedReportId] = useState(null);
+  // Diep-linken vanuit een pushmelding (?team=&tab=&report=, zie de notificationclick-handler in
+  // firebase-messaging-sw.js): naar Live als de wedstrijd nog bezig was toen de melding werd
+  // verstuurd, anders naar het bijbehorende wedstrijdverslag (indien al opgeslagen), anders naar
+  // de algemene Wedstrijdverslagen-pagina. ?team= is nodig omdat iemand niet-ingelogd meerdere
+  // teams kan volgen - zonder team-param zou zo iemand op het standaardteam terechtkomen i.p.v.
+  // het team waar de melding daadwerkelijk over ging. Wacht bij een team-param op teamsLoaded
+  // (om 'm te kunnen valideren) voordat er iets wordt toegepast; zonder team-param gebeurt dat
+  // meteen. Ververst maar één keer, anders zou een latere handmatige tabwissel steeds worden
+  // teruggezet zolang de query-string nog in de adresbalk staat.
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const wantTeam = params.get('team');
+    const wantTab = params.get('tab');
+    const wantReport = params.get('report');
+    if (!wantTeam && !wantTab && !wantReport) { deepLinkAppliedRef.current = true; return; }
+    if (wantTeam) {
+      if (!teamsLoaded) return;
+      if (teams.some(t => t.id === wantTeam)) setCurrentTeamId(wantTeam);
+    }
+    if (wantTab) setTab(wantTab);
+    if (wantReport) setExpandedReportId(wantReport);
+    deepLinkAppliedRef.current = true;
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [teamsLoaded, teams]);
   // Index (in m.goalLog) van de logregel die de coach nu aan het bewerken is, plus het
   // bijbehorende bewerkformulier - null = geen bewerkdialoog open.
   const [editEntryIdx, setEditEntryIdx] = useState(null);
@@ -2166,6 +2194,7 @@ export default function App() {
   return {
     key: p.id,
     name: p.first + ' ' + p.last,
+    card: cardFor(p.first),
     posCount: Object.values(p.prefs).filter(Boolean).length + (p.fixedKeeper ? 1 : 0),
     level: String(p.level || 3),
     onLevel: e => { if (readOnly) return; const v = Number(e.target.value); setPlayers(ps => ps.map(x => x.id === p.id ? { ...x, level: v } : x)); },
@@ -3135,12 +3164,50 @@ export default function App() {
   // Live-pagina (huidige wedstrijd, via scoreFxObj) als een opgeslagen wedstrijdverslag (oude,
   // afgelopen wedstrijd, via de wedstrijd zelf) dezelfde regel tonen — daarom home/opponentName
   // als losse parameters i.p.v. rechtstreeks scoreFxObj/m te gebruiken.
+  // Spelerskaartjes (zie playerCards.js) bij een logregel: bij een eigen doelpunt de schutter (en
+  // assist) via hun speler-id (exact, geen giswerk); bij vrije tekst (Extra live commentaar) door
+  // te zoeken naar een herkende voornaam in de tekst - alleen spelers mét kaartje leveren een
+  // plaatje op, een niet-herkende of kaartloze naam levert gewoon niets extra's op.
+  function cardsForNote(text) {
+    if (!text) return [];
+    const found = [];
+    const seen = new Set();
+    players.forEach(p => {
+      if (seen.has(p.id) || !p.first) return;
+      const card = cardFor(p.first);
+      if (!card) return;
+      const re = new RegExp('\\b' + p.first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      if (re.test(text)) { found.push({ id: p.id, name: p.first, card }); seen.add(p.id); }
+    });
+    return found;
+  }
+  function logEntryCards(g) {
+    if (g.team === 'note') return cardsForNote(g.text);
+    if (g.team !== 'us') return [];
+    const cards = [];
+    const scorer = g.scorerId && byId(g.scorerId);
+    if (scorer) { const card = cardFor(scorer.first); if (card) cards.push({ id: scorer.id, name: scorer.first, card }); }
+    const assist = g.assistId && byId(g.assistId);
+    if (assist) { const card = cardFor(assist.first); if (card) cards.push({ id: assist.id, name: assist.first, card }); }
+    return cards;
+  }
   function formatMatchLogEntry(g, home, opponentName) {
-    if (g.team === 'note') return g.minute + 'e minuut: ' + g.text;
+    const cards = logEntryCards(g);
+    const cardRow = cards.length > 0 && (
+      <span style={css('display:inline-flex;gap:4px;vertical-align:middle;margin-left:8px')}>
+        {cards.map(c => (
+          <button key={c.id} type="button" onClick={() => setCardModal(c.card)} title={`Spelerskaart van ${c.name}`}
+            style={css('border:none;padding:0;cursor:pointer;background:none;line-height:0;vertical-align:middle')}>
+            <img src={c.card} alt="" style={css('height:26px;width:auto;border-radius:4px;object-fit:cover;vertical-align:middle')} />
+          </button>
+        ))}
+      </span>
+    );
+    if (g.team === 'note') return <>{g.minute}e minuut: {g.text}{cardRow}</>;
     const first = home ? g.atUs : g.atThem;
     const second = home ? g.atThem : g.atUs;
     if (g.team === 'us') {
-      return g.minute + 'e minuut: ' + (g.scorerName || ownTeamName) + (g.assistName ? ' (assist: ' + g.assistName + ')' : '') + ' scoort voor ' + ownTeamName + ' — ' + first + '–' + second + (g.remark ? '. ' + g.remark : '');
+      return <>{g.minute}e minuut: {g.scorerName || ownTeamName}{g.assistName ? ' (assist: ' + g.assistName + ')' : ''} scoort voor {ownTeamName} — {first}–{second}{g.remark ? '. ' + g.remark : ''}{cardRow}</>;
     }
     return g.minute + 'e minuut: ' + opponentName + ' scoort — ' + first + '–' + second;
   }
@@ -4378,7 +4445,14 @@ export default function App() {
         <main style={css('padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-4)')}>
           <h2 style={css('font-family:var(--font-heading);font-size:26px;margin:0;font-weight:600')}>Team</h2>
           {isMyTeam && <p style={css('margin:0;font-size:15px;color:var(--color-neutral-700);max-width:70ch;text-wrap:pretty')}>Niveau geeft de sterkte aan. Bij de posities is 1 de beste positie voor deze speelster, 2 de op één na beste, enzovoort. Laat leeg wat zij niet speelt. Met 🚫 geef je aan dat ze op die positie nooit ingedeeld mag worden.</p>}
-          <div style={{ overflowX: 'auto' }}>
+          {/* maxHeight+overflowY hier is nodig omdat overflowX:auto anders stiekem ook
+              overflowY op auto zet (CSS-regel: als de ene as niet visible is, wordt de andere
+              dat ook) - zonder een eigen, daadwerkelijk scrollende hoogte wordt dít element dan
+              de "scroll-ouder" waar de sticky kolomkop (.table-sticky-head, top:0) zich aan
+              probeert vast te zetten, terwijl in werkelijkheid de hele pagina scrolt: de kop
+              plakt dan nergens aan vast en verdwijnt gewoon bij het naar beneden scrollen. Met
+              een eigen scrollende hoogte hier (i.p.v. de pagina) klopt de sticky-referentie weer. */}
+          <div style={css('overflow-x:auto;overflow-y:auto;max-height:70vh')}>
             {/* De brede min-width is alleen nodig zodra de positievoorkeur-kolommen (en Niveau)
                 erbij staan - voor een niet-coach/admin-viewer, die alleen Speelster/Type/KP/DP
                 ziet, zou dat een tabel vol lege ruimte opleveren. */}
@@ -4407,7 +4481,17 @@ export default function App() {
               <tbody>
                 {teamRows.map(r => (
                   <tr key={r.key}>
-                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</td>
+                    <td style={{ textAlign: 'left', whiteSpace: 'nowrap', padding: r.card ? 0 : undefined }}>
+                      <div style={css('display:flex;align-items:center;height:100%')}>
+                        {r.card && (
+                          <button type="button" onClick={() => setCardModal(r.card)} title={`Spelerskaart van ${r.name}`}
+                            style={css('border:none;padding:0;cursor:pointer;flex:0 0 auto;background:var(--color-bg);line-height:0')}>
+                            <img src={r.card} alt="" style={css('height:64px;width:auto;display:block;object-fit:cover')} />
+                          </button>
+                        )}
+                        <span style={css('display:flex;align-items:center;' + (r.card ? 'padding:var(--space-2)' : ''))}>{r.name}{isMyTeam ? ` (${r.posCount})` : ''}</span>
+                      </div>
+                    </td>
                     <td style={{ textAlign: 'center' }}><button type="button" className="tag" disabled={readOnly} style={{ cursor: 'pointer', border: 'none' }} onClick={r.onToggleSub}>{r.subLabel}</button></td>
                     {isMyTeam && (
                       <td style={{ textAlign: 'center' }}>
@@ -4468,6 +4552,12 @@ export default function App() {
             </div>
           )}
         </main>
+      )}
+
+      {cardModal && (
+        <div className="dialog-backdrop" data-noprint="1" style={css('position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--space-4)')} onClick={() => setCardModal(null)}>
+          <img src={cardModal} alt="Spelerskaart" style={css('max-width:min(90vw,420px);max-height:85vh;border-radius:var(--radius-lg);box-shadow:0 10px 40px rgba(0,0,0,0.4)')} onClick={e => e.stopPropagation()} />
+        </div>
       )}
 
       {tab === 'verslagen' && (
