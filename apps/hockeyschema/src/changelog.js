@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.2.0',
+    date: '2026-09-12',
+    changes: [
+      'Wedstrijdmodus: knop "Scherm actief houden" voorkomt dat een laptop tijdens de wedstrijd door inactiviteit in slaapstand gaat / vergrendelt. Zelf aan/uit te zetten, en schakelt automatisch uit bij "Wedstrijd beëindigen".',
+    ],
+  },
+  {
     version: '1.1.0',
     date: '2026-09-12',
     changes: [
