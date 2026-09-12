@@ -567,6 +567,33 @@ export default function App() {
       document.documentElement.requestFullscreen().catch(() => {});
     }
   }
+  // "Scherm actief houden" tijdens wedstrijdmodus - voorkomt dat het toestel na een tijdje
+  // inactiviteit vergrendelt/in slaapstand gaat (waarna opnieuw inloggen nodig is). De browser
+  // trekt de wake lock zelf automatisch in zodra het tabblad naar de achtergrond gaat (andere
+  // app/tabblad, scherm vergrendeld) - de visibilitychange-listener hieronder vraagt 'm bij
+  // terugkeer opnieuw aan zolang wakeLockOn nog aanstaat, anders zou een korte tabwissel de
+  // bescherming stilletjes uitzetten zonder dat de knop dat laat zien. Wordt automatisch
+  // uitgezet door endMatch (zie daar) - handmatig aan/uit blijft via de knop in wedstrijdmodus.
+  const [wakeLockOn, setWakeLockOn] = useState(false);
+  const wakeLockRef = useRef(null);
+  useEffect(() => {
+    if (!wakeLockOn || !('wakeLock' in navigator)) return;
+    let cancelled = false;
+    const acquire = () => {
+      navigator.wakeLock.request('screen').then(sentinel => {
+        if (cancelled) { sentinel.release().catch(() => {}); return; }
+        wakeLockRef.current = sentinel;
+      }).catch(() => { /* geweigerd (bv. batterijbesparing) - knop blijft gewoon aan te klikken */ });
+    };
+    acquire();
+    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
+    };
+  }, [wakeLockOn]);
   // Puur lokale tik voor het live aftellen (elke kijker rekent zelf door op basis van het
   // gesynchroniseerde endAt-tijdstip in m.clocks - zie hieronder) - wordt nooit weggeschreven.
   const [timerNow, setTimerNow] = useState(() => Date.now());
@@ -3088,6 +3115,7 @@ export default function App() {
     patchMatch(team === 'us' ? { liveUs: Math.max(0, (m.liveUs || 0) - 1) } : { liveThem: Math.max(0, (m.liveThem || 0) - 1) });
   }
   function endMatch() {
+    setWakeLockOn(false);
     patchMatch({ liveEnded: true });
     if (scoreFxObj) {
       // Het wedstrijdverslag wordt op de wedstrijd zelf bewaard (niet op het tijdelijke
@@ -3340,6 +3368,11 @@ export default function App() {
             <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} disabled={readOnly} onClick={() => openTeamNoteEditor(liveQuarter)}>+ Teamnotitie</button>
             {m.liveMatchStarted && !m.liveEnded && (
               <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => { setMinuteInput(String(elapsedMatchMinutes())); setCommentDialog(true); }}>Extra live commentaar</button>
+            )}
+            {'wakeLock' in navigator && (
+              <button type="button" className={wakeLockOn ? 'btn btn-primary' : 'btn btn-secondary'} style={css('flex:1;min-width:140px')}
+                title="Voorkomt dat dit toestel tijdens de wedstrijd vergrendelt/in slaapstand gaat"
+                onClick={() => setWakeLockOn(v => !v)}>{wakeLockOn ? '🔆 Scherm blijft aan' : '🔆 Scherm actief houden'}</button>
             )}
             {m.liveMatchStarted && !m.liveEnded && (
               <button type="button" className="btn btn-secondary" style={css('flex:1;min-width:140px')} onClick={() => setEndMatchConfirm(true)}>Wedstrijd beëindigen</button>
