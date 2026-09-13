@@ -4,6 +4,13 @@
 // vite.config.js) en voeg hier een entry toe met dezelfde major.minor.
 export const CHANGELOG = [
   {
+    version: '1.10.0',
+    date: '2026-09-13',
+    changes: [
+      'Bugfix: bij een doelpunt kwam de pushmelding soms dubbel binnen - vooral bij het eerste doelpunt van een wedstrijd, na een tijd dat er niemand aan het scoren was. Kwam door een dubbele bezorging van hetzelfde doelpunt-schrijfmoment; dat wordt nu herkend en overgeslagen.',
+    ],
+  },
+  {
     version: '1.9.0',
     date: '2026-09-12',
     changes: [
