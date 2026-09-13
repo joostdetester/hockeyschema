@@ -467,6 +467,20 @@ exports.onGoalScored = onDocumentWritten('teams/{teamId}/state/public', async ev
   if (afterUs.length <= beforeUsCount && afterThem.length <= beforeThemCount) return;
 
   const teamId = event.params.teamId;
+
+  // Idempotentie: Eventarc/Pub-Sub bezorgt Firestore-triggers "at least once" - als deze functie
+  // (bv. na een tijd inactiviteit, koude start) niet snel genoeg reageert, bezorgt Pub/Sub
+  // hetzelfde schrijfevent nog een keer, wat zonder deze check tot twee pushmeldingen voor
+  // precies hetzelfde doelpunt leidt (waargenomen 2026-09-13, telkens vlak na een "Starting new
+  // instance"-koude-start in de logs). event.id is voor zo'n duplicaat identiek aan het origineel,
+  // dus deze create() (die faalt als het document al bestaat) claimt het event atomisch: alleen
+  // de eerste geslaagde poging verstuurt de melding, elke latere (duplicaat-)aanroep stopt hier.
+  try {
+    await admin.firestore().doc(`teams/${teamId}/sentGoalNotifications/${event.id}`).create({ sentAt: new Date().toISOString() });
+  } catch (err) {
+    return;
+  }
+
   // Zelfde thuis/uit-volgorde en formaat als scoreLine in App.jsx (client) - bv. "Ring Pass
   // tegen HCRB stand is 4 tegen 29". Vereist de eigen teamnaam, die niet in state/public zelf
   // staat (dat heeft alleen match.opponent), vandaar deze extra losse read.
